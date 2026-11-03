@@ -1,34 +1,55 @@
-name: Deploy to GitHub Pages
+name: Deploy Node.js App to GitHub Pages
 
 on:
   push:
-    branches: [ main ]  # 每次推送到 main 分支時觸發
+    branches: [ main ]
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# 允許同時進行單次部署
 concurrency:
   group: "pages"
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # 1. 安裝相依套件 (對應你的 node_modules)
+      - name: Install dependencies
+        run: npm ci
+
+      # 2. 執行打包指令 (通常專案裡都有設定好 build 指令)
+      - name: Build
+        run: npm run build
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
+
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
-          path: '.'  # 指定你的專案根目錄（因為裡面直接就有 index.html）
+          # 通常打包後的檔案會放在 dist 或 build 資料夾，請根據你的專案設定調整
+          path: './dist' 
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
