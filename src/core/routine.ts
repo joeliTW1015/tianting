@@ -1,7 +1,7 @@
 // 日常政務：稅則、邊餉、災異、京察、宮廷用度、開源、京營、漕運、人事、郊祀、京師糧價。
 // 每件政務是一份帶選項的文書；選擇會立即扣除成本，地方性的效果隨驛程送達。
 
-import { cn, shortDate } from './calendar';
+import { shortDate } from './calendar';
 import { core, draft, fluff, local, post, task, type DocDraft } from './docs';
 import { BORDERS, PROVINCES, REGIONS, regionName, travelTurns } from './geography';
 import { chance, int, pick, range } from './rng';
@@ -9,6 +9,14 @@ import type { Choice, Doc, GameState, RegionId } from './types';
 import { applyForeignChoice } from './foreign';
 import { applyPalaceChoice } from './palace';
 import { applyRiotChoice } from './unrest';
+import { applyEunuchGift } from './cases/eunuch';
+import { registerPostHook } from './docs';
+import { applyVetoChoice } from './edicts';
+import { applyHaremChoice } from './harem';
+import { drawLot } from './intel';
+import { applyIntrigueChoice } from './intrigue';
+import { delegateChoice, shouldDelegate } from './people';
+import { addStatus } from './statuses';
 import { addMood, addPrestige, addUnrest, clamp, event, flow, gov, govId, grainText, replaceChar, silver } from './util';
 
 export const BORDER_PAY = 90;
@@ -29,9 +37,9 @@ export function routineTick(state: GameState): void {
   const r = state.rng;
   if (t % 12 === 0 && t > 0) taxDoc(state);
   if (t % 6 === 2) borderPayDoc(state);
-  if (t === 18 || t === 54) jingchaDoc(state);
-  if (t === 6 || t === 30 || t === 54) drillDoc(state);
-  if (t === 33 || t === 69) ceremonyDoc(state);
+  if (t % 36 === 18) jingchaDoc(state);
+  if (t % 36 === 33) ceremonyDoc(state);
+  borderUnrest(state);
   if (chance(r, 0.2) && !recentlyHad(state, 'disaster', 3)) disasterDoc(state);
   if (chance(r, 0.06) && !recentlyHad(state, 'palace', 12)) palaceDoc(state);
   if (chance(r, 0.06) && !recentlyHad(state, 'revenue', 8)) revenueDoc(state);
@@ -40,16 +48,44 @@ export function routineTick(state: GameState): void {
   if (state.reportedGrain < 95 && !pending(state, 'grain') && !recentlyHad(state, 'grain', 4)) grainDoc(state);
 }
 
-/** 逾期未批的政務，依例處置 */
+/** 逾期未批的政務，依例處置；大臣代辦的政務在退朝時生效 */
 export function routineDeadlines(state: GameState): void {
   for (const d of state.docs) {
-    if (d.task && !d.task.chosen && state.turn > d.task.deadline) {
+    if (!d.task || d.task.chosen) continue;
+    const dg = d.task.delegate;
+    if (dg && state.turn > d.task.deadline) {
+      const c = d.task.choices.find((x) => x.id === dg.choice);
+      const w = state.world;
+      const ok = c && (c.silver ?? 0) <= w.treasury && (c.privy ?? 0) <= w.privy && (c.grain ?? 0) <= w.grain;
+      const pick = ok ? dg.choice : d.task.fallback;
+      d.task.chosen = pick;
+      applyChoice(state, d, pick, !ok);
+      continue;
+    }
+    if (state.turn > d.task.deadline) {
       d.task.chosen = d.task.fallback;
       const c = d.task.choices.find((x) => x.id === d.task!.fallback);
       state.log.push({ turn: state.turn, text: `〈${d.title}〉逾期未批，依例「${c?.label ?? '照舊'}」` });
       applyChoice(state, d, d.task.fallback, true);
     }
   }
+}
+
+/** 依授權：大臣自行處分（本旬退朝時生效，皇帝可以駁回改批） */
+registerPostHook((state, doc) => {
+  if (doc.request && typeof doc.from === 'string' && doc.from.startsWith('gov:') && state.chars[doc.from]?.authority === 'free') doc.delegatedBy = doc.from;
+  const by = shouldDelegate(state, doc);
+  if (!by || !doc.task) return;
+  const { choice, why } = delegateChoice(state, doc, by);
+  doc.task.delegate = { by, choice, why };
+  doc.task.deadline = Math.min(doc.task.deadline, doc.arriveTurn);
+});
+
+/** 邊餉積欠：四個月起有兵變之虞 */
+function borderUnrest(state: GameState): void {
+  const a = state.world.borderArrears;
+  const p = a >= 6 ? 0.2 : a >= 4 ? 0.05 : 0;
+  if (p && chance(state.rng, p)) borderMutiny(state);
 }
 
 // ───────────────────────── 套用選項 ─────────────────────────
@@ -59,6 +95,15 @@ export function applyChoice(state: GameState, doc: Doc, choiceId: string, auto =
   const t = doc.task!;
   const c = t.choices.find((x) => x.id === choiceId)!;
   if (!auto) flow(state, TASK_CAT[t.id] ?? '其他', `${doc.title}：${c.label}`, { silver: -(c.silver ?? 0), grain: -(c.grain ?? 0), privy: -(c.privy ?? 0) });
+  if (c.status) addStatus(state, c.status);
+  let ok = true;
+  if (c.odds !== undefined) {
+    const lot = drawLot(state, c.odds);
+    ok = lot.ok;
+    doc.lot = { tier: lot.tier, ok, label: lot.label };
+    state.log.push({ turn: state.turn, text: `〈${doc.title}〉「${c.label}」擲籤：${lot.label}（${ok ? '事成' : '不成'}）` });
+  }
+  if (t.delegate && t.delegate.choice === choiceId) state.log.push({ turn: state.turn, text: `處分：${state.chars[t.delegate.by]?.title ?? ''}${state.chars[t.delegate.by]?.name ?? ''}〈${doc.title}〉「${c.label}」` });
   const region = t.region;
   const data = t.data ?? {};
   switch (t.id) {
@@ -68,13 +113,12 @@ export function applyChoice(state: GameState, doc: Doc, choiceId: string, auto =
       if (choiceId === 'light') addPrestige(state, 2);
       break;
     case 'border': {
-      const dm = choiceId === 'full' || choiceId === 'privy' ? 0.1 : choiceId === 'partial' ? -0.05 : -0.15;
+      const dm = choiceId === 'clear' ? 0.15 : choiceId === 'full' || choiceId === 'privy' ? 0.06 : choiceId === 'partial' ? -0.04 : -0.15;
       for (const b of BORDERS) w.regions[b].morale = clamp(w.regions[b].morale + dm, 0.3, 1.2);
-      if (choiceId === 'defer') w.borderArrears += 1;
-      else if (choiceId === 'partial') w.borderArrears += 0.4;
-      else w.borderArrears = 0;
+      if (choiceId === 'defer') w.borderArrears += 2;
+      else if (choiceId === 'partial') w.borderArrears += 0.6;
+      else if (choiceId === 'clear') w.borderArrears = 0;
       if (choiceId === 'privy') addPrestige(state, 3);
-      if (w.borderArrears >= 2) borderMutiny(state);
       break;
     }
     case 'disaster':
@@ -167,8 +211,12 @@ export function applyChoice(state: GameState, doc: Doc, choiceId: string, auto =
       else addPrestige(state, -2);
       break;
     default:
-      if (t.id.startsWith('for:')) applyForeignChoice(state, doc, choiceId);
+      if (t.id.startsWith('for:') || t.id.startsWith('tw:')) applyForeignChoice(state, doc, choiceId, ok);
       else if (t.id.startsWith('riot:')) applyRiotChoice(state, doc, choiceId);
+      else if (t.id.startsWith('harem:')) applyHaremChoice(state, doc, choiceId);
+      else if (t.id === 'edict:veto') applyVetoChoice(state, doc, choiceId);
+      else if (t.id === 'eu:gift') applyEunuchGift(state, choiceId, ok);
+      else if (/^(as|dw|lit|dil):/.test(t.id)) applyIntrigueChoice(state, doc, choiceId, ok);
       else applyPalaceChoice(state, doc, choiceId);
       break;
   }
@@ -243,10 +291,14 @@ function taxDoc(state: GameState): void {
 function borderPayDoc(state: GameState): void {
   const w = state.world;
   const choices: Choice[] = [
-    { id: 'full', label: '足額發餉', note: `國庫支出 ${BORDER_PAY} 萬兩；四邊士氣上升，積欠清零。`, silver: BORDER_PAY },
-    { id: 'partial', label: '先發七成', note: `國庫支出 ${Math.round(BORDER_PAY * 0.7)} 萬兩；士氣略降，留下一些積欠。`, silver: Math.round(BORDER_PAY * 0.7) },
-    { id: 'defer', label: '暫緩發放', note: '不花錢；四邊士氣大降、積欠增加。積欠過多會引發兵變。' },
+    { id: 'full', label: '足額發本期', note: `國庫支出 ${BORDER_PAY} 萬兩；士氣上升；舊欠不動。`, silver: BORDER_PAY },
+    { id: 'partial', label: '先發七成', note: `國庫支出 ${Math.round(BORDER_PAY * 0.7)} 萬兩；士氣略降，積欠多約半個月。`, silver: Math.round(BORDER_PAY * 0.7) },
+    { id: 'defer', label: '暫緩發放', note: '不花錢；四邊士氣大降、積欠多兩個月。積欠四個月以上，邊鎮可能兵變。' },
   ];
+  if (w.borderArrears >= 1) {
+    const clear = Math.round(BORDER_PAY + 45 * w.borderArrears);
+    choices.unshift({ id: 'clear', label: '連積欠一併補發', note: `國庫支出 ${clear} 萬兩：本期與積欠的 ${Math.round(w.borderArrears)} 個月一次發清；士氣大振。`, silver: clear });
+  }
   if (w.privy >= BORDER_PAY) choices.push({ id: 'privy', label: '發內帑代支', note: `用你的私房錢（內帑）${BORDER_PAY} 萬兩代付；士氣上升，朝望 +3。`, privy: BORDER_PAY });
   const d = capitalTask(state, 'hubu', '戶部請發四邊兩月餉銀', 'border', choices, 'defer', 2, { recommend: w.treasury >= BORDER_PAY ? 'full' : 'partial' });
   core(d, `戶部謹奏：薊鎮、宣大、遼東、甘肅四鎮兩月餉銀，共該${silver(BORDER_PAY)}。${w.borderArrears >= 1 ? '前餉尚有積欠，邊軍嗷嗷。' : ''}伏乞聖裁。`, `四邊兩月餉銀共${silver(BORDER_PAY)}${w.borderArrears >= 1 ? '，前餉尚欠' : ''}`, `四個邊鎮兩個月的軍餉，一共要 ${BORDER_PAY} 萬兩。${w.borderArrears >= 1 ? '之前還有欠著沒發的。' : ''}`);
@@ -261,18 +313,6 @@ function jingchaDoc(state: GameState): void {
   ], 'normal', 3, { recommend: 'normal' });
   core(d, '吏部謹奏：京察之期已屆，內外官員考核賢否，應如何處置，伏候欽定。', '京察之期已屆，請定寬嚴', '六年一次的官員大考核到了。嚴格考核可以整頓貪官，但會得罪很多人。');
   fluff(d, `近年吏治${state.world.corruption > 50 ? '頗為廢弛，貪墨成風' : '尚稱整肅'}。`, state.world.corruption > 50 ? '最近官場風氣很差，貪污很普遍。' : '最近官場風氣還算可以。');
-  post(state, d);
-}
-
-function drillDoc(state: GameState): void {
-  const w = state.world;
-  const d = capitalTask(state, 'bingbu', '兵部請整頓京營', 'drill', [
-    { id: 'recruit', label: '募兵六千', note: '國庫 −30 萬兩；京營 +6000 人（往後每旬多花錢糧）。', silver: 30 },
-    { id: 'train', label: '汰弱操練', note: '國庫 −10 萬兩；京營戰力提升。', silver: 10 },
-    { id: 'cut', label: '裁汰冗兵', note: '京營 −6000 人，往後每旬省下錢糧；朝望 −1。' },
-    { id: 'keep', label: '照舊', note: '不變。' },
-  ], 'keep', 3, { recommend: 'train' });
-  core(d, `兵部謹奏：京營見額${cn(Math.round(w.jingying / 1000))}千餘，老弱參半。或募、或汰、或裁，伏乞聖裁。`, `京營見額約${Math.round(w.jingying / 1000)}千，請整頓`, `京營現在大約 ${Math.round(w.jingying / 1000)} 千人，其中很多是老弱。要招新兵、操練，還是裁減？`);
   post(state, d);
 }
 

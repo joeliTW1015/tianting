@@ -2,7 +2,9 @@ import { useState } from 'preact/hooks';
 import { issueOrder, orderOptions, setBelief, setNote, setTrust, type OrderOption } from '../core/actions';
 import { dateLabel, shortDate } from '../core/calendar';
 import { SUMMONABLE } from '../core/court';
-import { REGIONS, regionName } from '../core/geography';
+import { REGIONS, regionName, travelTurns } from '../core/geography';
+import { UNITS } from '../core/war';
+import type { EdictInit } from './EdictModal';
 import { shoufuOptions } from '../core/scoring';
 import type { GameState, RegionId, Trust } from '../core/types';
 import type { CharView, KnownFact, PlayerView } from '../core/view';
@@ -20,12 +22,15 @@ interface RegionProps {
   act: Act;
   onOpenDoc: (id: number) => void;
   onOpenBuild: () => void;
+  onEdict: (i: EdictInit) => void;
+  onArmy: (id: number) => void;
 }
 
-export function RegionPanel({ view, region, state, act, onOpenDoc, onOpenBuild }: RegionProps) {
+export function RegionPanel({ view, region, state, act, onOpenDoc, onOpenBuild, onEdict, onArmy }: RegionProps) {
   const rv = view.regions[region];
   const [pendingOpt, setPendingOpt] = useState<OrderOption | null>(null);
-  const options = orderOptions(state, region);
+  const options = REGIONS[region].kind === 'outer' ? [] : orderOptions(state, region);
+  const here = view.armies.filter((a) => a.region === region);
   const generic = options.filter((o) => !o.caseId);
   const byCase = view.cases.filter((c) => options.some((o) => o.caseId === c.uid));
   const groups = groupFacts(rv.facts);
@@ -48,20 +53,73 @@ export function RegionPanel({ view, region, state, act, onOpenDoc, onOpenBuild }
   return (
     <div class="region-panel">
       <div class="panel-head">
-        <Portrait look={g.look} kind={g.kind} rank={g.rank} size={46} />
+        {REGIONS[region].kind !== 'outer' ? <Portrait look={g.look} kind={g.kind} rank={g.rank} size={46} /> : <span class="kseal big">疆</span>}
         <div>
           <h3>
             {regionName(region)}
-            <small>{REGIONS[region].kind === 'border' ? '邊鎮' : REGIONS[region].kind === 'capital' ? '京畿' : '行省'}・驛程 {REGIONS[region].days} 日</small>
+            <small>
+              {REGIONS[region].kind === 'border' ? '邊鎮' : REGIONS[region].kind === 'capital' ? '京畿' : REGIONS[region].kind === 'outer' ? '新附之地' : '行省'}・驛路 {travelTurns(state, region)} 旬・控制度 {rv.control}
+            </small>
           </h3>
           <span class="muted small">
-            {REGIONS[region].gov}・{g.name}
-            {g.term > 1 ? '（新任）' : ''}
-            ｜{region === 'jingshi' ? '天子腳下' : age === null ? '尚無消息' : `最後消息發於${shortDate(rv.lastNews!)}（${age} 旬前）`}
+            {REGIONS[region].kind === 'outer' ? rv.ownerName : `${REGIONS[region].gov}・${g.name}${g.term > 1 ? '（新任）' : ''}`}
+            ｜{region === view.capital ? '天子腳下' : age === null ? '尚無消息' : `最後消息發於${shortDate(rv.lastNews!)}（${age} 旬前）`}
           </span>
         </div>
       </div>
 
+      {rv.troops && (
+        <div class={`troops-line ${rv.troops.certified ? 'sure' : ''}`}>
+          兵數：{rv.troops.certified ? '〔確〕' : '據報'} {fmtNum(rv.troops.value, '人')}（{rv.troops.source}・{shortDate(rv.troops.turn)}）
+          {REGIONS[region].gunit && <span class="muted">・駐軍{UNITS[REGIONS[region].gunit]?.name}</span>}
+        </div>
+      )}
+      {here.length > 0 && (
+        <div class="here-armies">
+          {here.map((a) => (
+            <button key={a.id} class="chip strong" onClick={() => onArmy(a.id)}>
+              {a.label}（{fmtNum(a.reported, '')}・{a.morale}）
+            </button>
+          ))}
+        </div>
+      )}
+      {REGIONS[region].kind !== 'outer' && (
+        <div class="quick-edicts">
+          <button class="chip" onClick={() => onEdict({ edict: 'recruit', target: region })}>
+            徵兵
+          </button>
+          {REGIONS[region].elite && (
+            <button class="chip" onClick={() => onEdict({ edict: 'elite', target: region })}>
+              募{UNITS[REGIONS[region].elite!].name}
+            </button>
+          )}
+          <button class="chip" onClick={() => onEdict({ edict: 'sendJingying', target: region })}>
+            發京營
+          </button>
+          <button class="chip" onClick={() => onEdict({ edict: 'relief', target: region })}>
+            賑濟
+          </button>
+          <button class="chip" onClick={() => onEdict({ edict: 'remit', target: region })}>
+            蠲免
+          </button>
+          <button class="chip" onClick={() => onEdict({ edict: 'audit', target: region })}>
+            點驗
+          </button>
+          <button class="chip" onClick={() => onEdict({ edict: 'walls', target: region })}>
+            築城
+          </button>
+          <button class="chip" onClick={() => onEdict({ edict: 'appoint', target: `gov:${region}` })}>
+            任免長官
+          </button>
+        </div>
+      )}
+      {REGIONS[region].kind === 'outer' && rv.owner === 'crown' && (
+        <div class="quick-edicts">
+          <button class="chip" onClick={() => onEdict({ edict: 'settle', target: region })}>
+            設官治理
+          </button>
+        </div>
+      )}
       {rv.held && (
         <div class="held-banner">
           <b>據報已陷於{rv.held}</b>
@@ -73,7 +131,7 @@ export function RegionPanel({ view, region, state, act, onOpenDoc, onOpenBuild }
           據{rv.foe.source}（{shortDate(rv.foe.turn)}）：境內或邊外有敵軍約 {Math.round(rv.foe.size / 1000)} 千
         </div>
       )}
-      {region === 'jingshi' && (
+      {region === view.capital && (
         <div class="capital-build">
           <span>京師營建</span>
           <span class="muted small">
@@ -134,7 +192,7 @@ export function RegionPanel({ view, region, state, act, onOpenDoc, onOpenBuild }
           <div class="orders">{options.filter((o) => o.caseId === c.uid).map(orderBtn)}</div>
         </div>
       ))}
-      <h4>下旨</h4>
+      {generic.length > 0 && <h4>地方旨意</h4>}
       <div class="orders">{generic.map(orderBtn)}</div>
       {pendingOpt && (
         <div class="confirm">
@@ -286,9 +344,24 @@ export function AgendaPanel({ view, onOpenDoc }: { view: PlayerView; onOpenDoc: 
           </ul>
         </div>
       ))}
+      {view.orderLog.length > 0 && (
+        <>
+          <h4>詔書</h4>
+          <ul class="transit">
+            {view.orderLog.slice(0, 24).map((o) => (
+              <li key={o.id} class={o.applied ? 'done' : ''}>
+                <b>{o.label}</b>
+                <span>
+                  {shortDate(o.issued)}下・{o.applied ? '已生效' : o.arrive > view.turn ? `${shortDate(o.arrive)}送達・${shortDate(o.done)}完成` : `${shortDate(o.done)}完成`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       {view.orders.length > 0 && (
         <>
-          <h4>已下旨意</h4>
+          <h4>地方旨意</h4>
           <TransitPanel view={view} />
         </>
       )}

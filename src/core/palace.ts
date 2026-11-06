@@ -4,8 +4,10 @@
 import { monthOf, seasonOf } from './calendar';
 import { claim, clue, core, draft, fluff, local, post, shoufuBias, task, type DocDraft } from './docs';
 import { PROVINCES, REGIONS, regionName } from './geography';
-import { chance, int, pick, range } from './rng';
+import { chance, pick, range } from './rng';
 import type { Choice, Doc, GameState, RegionId } from './types';
+import { favor } from './harem';
+import { fx } from './statuses';
 import { addMood, addPrestige, addUnrest, clamp, event, flow, gov, replaceChar } from './util';
 
 export const MOOD_TEXT = ['煩躁易怒', '鬱鬱寡歡', '略感煩悶', '心緒平和', '龍心大悅'];
@@ -15,28 +17,72 @@ export function moodBand(m: number): number {
   return m >= 75 ? 4 : m >= 55 ? 3 : m >= 40 ? 2 : m >= 25 ? 1 : 0;
 }
 
-// ───────────────────────── 精力上限 ─────────────────────────
+// ───────────────────────── 精力與勞損 ─────────────────────────
+// 精力池 0～10（勤政 11），不再每旬回滿：每旬回復 4，可透支到 −3；透支與操勞累積勞損，勞損提高生病機率。
 
-export function energyCap(state: GameState): { cap: number; reasons: string[] } {
+export const ENERGY_FLOOR = -3;
+export const FATIGUE_TEXT = ['神清氣爽', '略有倦意', '頗感疲憊', '積勞成疾之兆', '形神俱疲'];
+
+export function fatigueBand(f: number): number {
+  return f >= 8 ? 4 : f >= 6 ? 3 : f >= 4 ? 2 : f >= 2 ? 1 : 0;
+}
+
+/** 下一旬的精力回復與原因 */
+export function energyCap(state: GameState): { cap: number; regen: number; reasons: string[] } {
   const e = state.world.emperor;
-  let cap = state.energyMax;
-  const reasons: string[] = [];
+  const cap = state.energyMax;
+  let regen = state.perk === 'diligent' ? 5 : 4;
+  const reasons: string[] = [`每旬回復 ${regen}`];
   if (e.mood >= 75) {
-    cap += 1;
-    reasons.push('龍心大悅，精神奕奕 +1');
+    regen += 1;
+    reasons.push('龍心大悅 +1');
   } else if (e.mood < 25) {
-    cap -= 1;
-    reasons.push('心緒煩亂，難以專注 −1');
+    regen -= 1;
+    reasons.push('心緒煩亂 −1');
   }
   if (e.illness) {
-    cap -= e.illness.severity;
+    regen -= e.illness.severity;
     reasons.push(`${ILL_TEXT[e.illness.severity]} −${e.illness.severity}`);
   }
-  if (state.turn < e.restUntil) {
-    cap -= 1;
-    reasons.push('罷朝靜養 −1');
+  if (e.spent <= 1) {
+    regen += 2;
+    reasons.push('本旬休養 +2');
   }
-  return { cap: Math.max(2, cap), reasons };
+  const fxr = fx(state, 'regen');
+  if (fxr) {
+    regen += fxr;
+    reasons.push(`驚魂未定 ${fxr}`);
+  }
+  if (state.turn < e.restUntil) {
+    regen += 1;
+    reasons.push('靜養 +1');
+  }
+  return { cap, regen: Math.max(1, regen), reasons };
+}
+
+/** 花精力：可以透支到 −3 */
+export function spend(state: GameState, n: number): string | null {
+  if (n <= 0) return null;
+  if (state.energy - n < ENERGY_FLOOR) return '精力已透支到極限（−3），今旬不能再勞神了。';
+  state.energy -= n;
+  state.world.emperor.spent += n;
+  return null;
+}
+
+/** 退朝時：結算勞損、回復精力（在推進旬數之前呼叫） */
+export function settleEnergy(state: GameState): void {
+  const e = state.world.emperor;
+  if (state.energy < 0) {
+    e.fatigue = clamp(e.fatigue - state.energy, 0, 10);
+    state.stats.overdraft += 1;
+  }
+  if (e.spent >= 7) e.fatigue = clamp(e.fatigue + 1, 0, 10);
+  if (state.energy >= 0 && e.spent <= 4) e.fatigue = clamp(e.fatigue - 0.5, 0, 10);
+  if (state.world.cooldown.restTurn === state.turn) e.fatigue = clamp(e.fatigue - 3, 0, 10);
+  const { cap, regen } = energyCap(state);
+  state.energy = Math.min(cap, state.energy + regen);
+  state.energyCap = cap;
+  e.spent = 0;
 }
 
 // ───────────────────────── 京師營建 ─────────────────────────
@@ -77,10 +123,12 @@ export function startProject(state: GameState, id: string, usePrivy = false): st
   if (projectState(state, id) !== 'idle') return '此工程已興辦。';
   if (state.world.projects.some((x) => !x.complete)) return '工部奏：一時不能並舉兩項大工。';
   if (def.needWest && !state.world.westerner) return '欽天監奏：無西洋曆算之人，難以興辦。';
-  if (state.energy < 1) return '精力不足。';
   const w = state.world;
   if (usePrivy ? w.privy < def.cost : w.treasury < def.cost) return usePrivy ? '內帑不足。' : '戶部奏：庫銀不足。';
-  state.energy -= 1;
+  if (state.orders.every((o) => o.edict !== 'build' || o.issuedTurn !== state.turn)) {
+    const err = spend(state, 1);
+    if (err) return err;
+  }
   flow(state, '營建', def.name, usePrivy ? { privy: -def.cost } : { silver: -def.cost });
   w.projects.push({ id, start: state.turn, done: state.turn + def.turns, complete: false });
   state.log.push({ turn: state.turn, text: `興工：${def.name}` });
@@ -100,58 +148,89 @@ export interface LeisureDef {
 }
 
 export const LEISURE: LeisureDef[] = [
-  { id: 'garden', name: '遊幸西苑', energy: 1, mood: 7, desc: '泛舟太液池，賞花觀魚。' },
-  { id: 'opera', name: '觀戲聽曲', energy: 1, privy: 2, mood: 9, desc: '傳教坊司、南府演戲。花些內帑。' },
-  { id: 'calligraphy', name: '臨池揮毫', energy: 1, mood: 5, desc: '讀書寫字，靜心養性。' },
-  { id: 'harem', name: '臨幸後宮', energy: 1, mood: 7, desc: '與后妃共度。或許會有好消息。' },
-  { id: 'temple', name: '禮佛問道', energy: 1, mood: 5, desc: '入宮中佛堂、道觀。病中有助康復。' },
-  { id: 'hunt', name: '南苑校獵', energy: 2, silver: 5, mood: 14, desc: '率京營校獵，京營士氣稍振；言官或有微詞，朝望 −1。' },
-  { id: 'incognito', name: '微服私訪', energy: 2, mood: 10, desc: '換上便服出宮，親耳聽聽市井怎麼說——會帶回一份見聞。' },
+  { id: 'garden', name: '遊幸西苑', energy: 1, mood: 8, desc: '泛舟太液池，賞花觀魚。勞損 −1。' },
+  { id: 'opera', name: '觀戲聽曲', energy: 1, privy: 2, mood: 12, desc: '傳教坊司、南府演戲。花些內帑；言官或議奢靡。' },
+  { id: 'calligraphy', name: '臨池揮毫', energy: 1, mood: 6, desc: '讀書寫字，靜心養性。勞損 −1，士林稱道（言路 +1）。' },
+  { id: 'harem', name: '臨幸後宮', energy: 1, mood: 10, desc: '選一位妃嬪共度：她的好感、恩寵上升，其他人妒意上升；或有喜訊。' },
+  { id: 'temple', name: '禮佛問道', energy: 1, mood: 6, desc: '入宮中佛堂、道觀。病中有助康復。' },
+  { id: 'hunt', name: '南苑校獵', energy: 2, silver: 5, mood: 15, desc: '率京營校獵，京營士氣稍振；有墜馬之險。' },
+  { id: 'incognito', name: '微服私訪', energy: 2, mood: 10, desc: '換上便服出宮，帶回一份確實的京師見聞；有遇刺之險、言官或議。' },
 ];
+
+export const LEISURE_COOLDOWN = 3;
+
+/** 6 旬內第幾次：效果 100%／60%／30% */
+export function leisureFactor(state: GameState, id: string): number {
+  const uses = (state.world.emperor.leisureLog[id] ?? []).filter((t) => state.turn - t < 6).length;
+  return uses === 0 ? 1 : uses === 1 ? 0.6 : 0.3;
+}
+
+export function leisureBlock(state: GameState, id: string): string | null {
+  const e = state.world.emperor;
+  if (e.leisureTurn === state.turn) return '本旬已經消遣過了（每旬一種）。';
+  const last = (e.leisureLog[id] ?? []).slice(-1)[0];
+  if (last !== undefined && state.turn - last < LEISURE_COOLDOWN) return `近來才玩過（冷卻 ${LEISURE_COOLDOWN - (state.turn - last)} 旬）。`;
+  return null;
+}
 
 /** 以文字描述娛樂的效果（不給數字） */
 export function leisureHint(state: GameState, def: LeisureDef): string {
-  const last = state.world.emperor.leisure[def.id];
-  const tired = last !== undefined && state.turn - last < 4;
-  const strength = def.mood >= 12 ? '大可解憂' : def.mood >= 8 ? '頗能解悶' : '略可舒心';
-  return tired ? `${strength}，但近來才玩過，興致已減` : strength;
+  const k = leisureFactor(state, def.id);
+  const strength = def.mood * k >= 12 ? '大可解憂' : def.mood * k >= 7 ? '頗能解悶' : '略可舒心';
+  return k < 1 ? `${strength}（近來玩過，興致只剩${k === 0.6 ? '六' : '三'}成）` : strength;
 }
 
-export function doLeisure(state: GameState, id: string): string | null {
+export function doLeisure(state: GameState, id: string, consort?: string): string | null {
   const def = LEISURE.find((x) => x.id === id);
   const w = state.world;
   const e = w.emperor;
   if (!def) return '無此事。';
   if (state.over) return '本局已終。';
-  if (state.energy < def.energy) return '精力不足。';
+  const block = leisureBlock(state, id);
+  if (block) return block;
   if ((def.silver ?? 0) > w.treasury) return '庫銀不足。';
   if ((def.privy ?? 0) > w.privy) return '內帑不足。';
-  state.energy -= def.energy;
+  if (id === 'harem' && !state.consorts.some((c) => c.id === consort && c.status === 'active')) return '請選一位妃嬪。';
+  const err = spend(state, def.energy);
+  if (err) return err;
   flow(state, '宮廷', def.name, { silver: -(def.silver ?? 0), privy: -(def.privy ?? 0) });
-  const last = e.leisure[id];
-  let gain = def.mood * (last !== undefined && state.turn - last < 4 ? 0.5 : 1);
+  let gain = def.mood * leisureFactor(state, id);
   if (w.buffs.garden && (id === 'garden' || id === 'opera')) gain *= 1.5;
-  if (e.illness && id === 'temple' && !e.illness.treated) e.illness.treat += 0.1;
   addMood(state, gain);
+  e.leisureTurn = state.turn;
+  (e.leisureLog[id] ??= []).push(state.turn);
   e.leisure[id] = state.turn;
-  if (id === 'hunt') {
-    addPrestige(state, -1);
-    w.jingyingMorale = clamp(w.jingyingMorale + 0.05, 0.4, 1.15);
+  const r = state.rng;
+  switch (id) {
+    case 'garden':
+      e.fatigue = clamp(e.fatigue - 1, 0, 10);
+      break;
+    case 'calligraphy':
+      e.fatigue = clamp(e.fatigue - 1, 0, 10);
+      w.speech = clamp(w.speech + 1, 0, 100);
+      break;
+    case 'opera':
+      if (chance(r, 0.1)) addPrestige(state, -1);
+      break;
+    case 'temple':
+      if (e.illness && !e.illness.treated) e.illness.treat += 0.1;
+      break;
+    case 'hunt':
+      w.jingyingMorale = clamp(w.jingyingMorale + 0.05, 0.3, 1.2);
+      if (chance(r, 0.05) && !e.illness) {
+        e.illness = { kind: '墜馬傷', severity: 1, since: state.turn, treat: 0, treated: false };
+        event(state, 'court', '上校獵墜馬，傷足。', true);
+      }
+      break;
+    case 'harem':
+      favor(state, consort!);
+      break;
+    case 'incognito':
+      incognitoReport(state);
+      if (chance(r, 0.08)) addPrestige(state, -2);
+      if (chance(r, 0.03)) w.cooldown['assassin:incognito'] = state.turn + 1;
+      break;
   }
-  if (id === 'harem') {
-    e.heirChance += 0.1;
-    if (!e.heirDue && chance(state.rng, e.heirChance)) {
-      e.heirDue = state.turn + int(state.rng, 6, 10);
-      e.heirChance = 0;
-      addMood(state, 6);
-      const d = local(draft('notice', 'silijian', 'jingshi', 'court', '司禮監奏：宮中有喜'), state);
-      d.free = true;
-      d.highlight = '宮中喜訊';
-      core(d, '奴婢謹奏：太醫診得某妃有娠，約於數旬之後誕育。', '某妃有娠', '太醫診斷出有妃子懷孕了，幾旬之後就會生產。（可在「行程」查看預計時間）');
-      post(state, d);
-    }
-  }
-  if (id === 'incognito') incognitoReport(state);
   state.log.push({ turn: state.turn, text: `${def.name}` });
   return null;
 }
@@ -188,10 +267,11 @@ export function palaceTick(state: GameState): void {
   // 心情：朝望牽動、操勞消磨
   const target = 30 + w.prestige * 0.45;
   addMood(state, (target - e.mood) * 0.08);
-  if (e.reads > 4) addMood(state, -(e.reads - 4) * 1.2);
+  if (e.fatigue >= 4) addMood(state, -(e.fatigue - 3) * 0.8);
   if (w.treasury < 0) addMood(state, -3);
   if (w.regions.jingshi.unrest > 60) addMood(state, -2);
-  const fatigue = e.reads;
+  addMood(state, fx(state, 'mood'));
+  const fatigue = e.fatigue;
   e.reads = 0;
 
   // 營建
@@ -217,7 +297,6 @@ export function palaceTick(state: GameState): void {
   illnessTick(state, fatigue);
   if (state.over) return;
 
-  if (e.heirDue && t >= e.heirDue) heirBorn(state);
 
   // 心情極差：遷怒臣下
   if (e.mood < 20 && chance(r, 0.25)) outburst(state);
@@ -232,8 +311,6 @@ export function palaceTick(state: GameState): void {
   if (chance(r, 0.25)) capitalEvent(state);
   if (chance(r, 0.55)) localAffair(state);
 
-  const { cap } = energyCap(state);
-  state.energyCap = cap;
 }
 
 // ───────────────────────── 病痛 ─────────────────────────
@@ -246,11 +323,11 @@ function illnessTick(state: GameState, fatigue: number): void {
   const e = w.emperor;
   const t = state.turn;
   if (!e.illness) {
-    let p = 0.012;
-    if (e.mood < 30) p += 0.03;
-    if (fatigue >= 6) p += 0.02;
-    if (t < w.plagueUntil) p += w.buffs.clinic ? 0.025 : 0.05;
-    if (t < e.elixirUntil) p += 0.06;
+    let p = 0.02 + fatigue * 0.03 * (state.difficulty === 'easy' ? 0.6 : 1);
+    if (e.mood < 25) p += 0.05;
+    if (t < w.plagueUntil) p += w.buffs.clinic ? 0.04 : 0.08;
+    if (t < e.elixirUntil) p += 0.04;
+    p += fx(state, 'ill');
     if (chance(r, p)) {
       const sev = chance(r, 0.6) ? 1 : chance(r, 0.75) ? 2 : 3;
       e.illness = { kind: pick(r, ILLS), severity: sev, since: t, treat: 0, treated: false };
@@ -276,12 +353,12 @@ function illnessTick(state: GameState, fatigue: number): void {
     event(state, 'court', '聖躬康復。');
     return;
   }
-  if (!ill.treated && ill.severity < 3 && chance(r, 0.12)) {
+  if (!ill.treated && ill.severity < 3 && chance(r, e.fatigue >= 6 ? 0.24 : 0.12)) {
     ill.severity += 1;
     event(state, 'court', `聖躬病勢加重（${ILL_TEXT[ill.severity]}）。`, true);
     illnessTask(state, true);
   }
-  if (ill.severity === 3 && chance(r, ill.treated ? 0.015 : 0.04)) {
+  if (ill.severity === 3 && chance(r, ill.treated ? 0.06 : 0.15)) {
     event(state, 'court', `上疾大漸，崩於乾清宮。`, true);
     state.over = { reason: 'illness', turn: t };
     return;
@@ -312,25 +389,6 @@ function illnessTask(state: GameState, again: boolean): void {
     `你生病了：${ill.kind}，${ILL_TEXT[ill.severity]}。病中精力會減少（輕 −1、重 −2、危 −3），心情也會變差。請選擇怎麼治療。`,
   );
   task(d, 'pal:ill', choices, 'none', state.turn + 1, { recommend: 'doctors' });
-  post(state, d);
-}
-
-function heirBorn(state: GameState): void {
-  const e = state.world.emperor;
-  e.heirDue = 0;
-  const son = chance(state.rng, 0.55);
-  e.heirs += 1;
-  addMood(state, son ? 20 : 12);
-  addPrestige(state, son ? 3 : 1);
-  event(state, 'court', `${son ? '皇子' : '公主'}誕生。`, true);
-  const d = palTask(state, 'pal:heir', '司禮監', `司禮監奏：${son ? '皇子' : '公主'}誕生`, [
-    { id: 'amnesty', label: '頒詔大赦天下', note: '各地民心好轉、朝望 +4；但大赦要花錢賞賜。', silver: 10 },
-    { id: 'celebrate', label: '宮中慶賀', note: '動用內帑設宴慶賀，龍心更悅。', privy: 3 },
-    { id: 'quiet', label: '不事張揚', note: '一切從簡。' },
-  ], 'quiet', 'celebrate');
-  d.highlight = '宮中喜訊';
-  d.free = true;
-  core(d, `司禮監謹奏：宮中${son ? '皇子' : '公主'}誕生，母子平安。此宗社之慶，伏乞聖裁。`, `${son ? '皇子' : '公主'}誕生`, `好消息：${son ? '皇子' : '公主'}出生了，母子平安。（龍心大悅）`);
   post(state, d);
 }
 

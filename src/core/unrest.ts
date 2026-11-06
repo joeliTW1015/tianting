@@ -42,14 +42,14 @@ export function unrestEvents(state: GameState): void {
       reg.sect = 20;
       const leader = leaderName(state);
       const sect = pick(r, SECTS);
-      rising(state, id, `${sect}${leader}`, 9000 + reg.unrest * 60, 1.07, 0.6, `${sect}教首${leader}聚眾起事，自稱「${pick(r, ['彌勒佛轉世', '中興福烈帝', '大乘天王'])}」`);
+      rising(state, id, `${sect}${leader}`, 9000 + reg.unrest * 60, 1.035, 0.6, `${sect}教首${leader}聚眾起事，自稱「${pick(r, ['彌勒佛轉世', '中興福烈帝', '大乘天王'])}」`);
       continue;
     }
     // 民變
     const hasRising = armiesOf(state, uprisingId(id)).length > 0;
     if (reg.unrest >= 85 && !hasRising) {
       const leader = leaderName(state);
-      rising(state, id, `${regionName(id)}亂民${leader}`, 6000 + (reg.unrest - 85) * 400, 1.06, 0.5, `饑民${leader}聚眾作亂，攻劫州縣`);
+      rising(state, id, `${regionName(id)}亂民${leader}`, 6000 + (reg.unrest - 85) * 400, 1.03, 0.5, `饑民${leader}聚眾作亂，攻劫州縣`);
       reg.unrest = 70;
       continue;
     }
@@ -114,7 +114,7 @@ export function applyRiotChoice(state: GameState, doc: Doc, id: string): void {
     addPrestige(state, -1);
     if (reg.unrest >= 72 && chance(state.rng, 0.3)) {
       const leader = leaderName(state);
-      rising(state, p, `${regionName(p)}亂民${leader}`, 7000, 1.06, 0.5, `官兵彈壓過當，${leader}乘勢聚眾`);
+      rising(state, p, `${regionName(p)}亂民${leader}`, 7000, 1.03, 0.5, `官兵彈壓過當，${leader}乘勢聚眾`);
     }
   } else if (id === 'punish') {
     addUnrest(state, p, -8);
@@ -133,7 +133,7 @@ export function banSect(state: GameState, id: RegionId): void {
     const leader = leaderName(state);
     core(d, `臣${g.name}謹奏：奉旨查禁邪教，教眾聞風，竟鋌而走險。`, '查禁邪教，教眾鋌而走險', '查禁太晚，教門已經坐大，一查反而逼他們起事。');
     post(state, d);
-    rising(state, id, `白蓮教${leader}`, 8000, 1.07, 0.6, `教首${leader}聞查禁之旨，倉促起事`);
+    rising(state, id, `白蓮教${leader}`, 8000, 1.035, 0.6, `教首${leader}聞查禁之旨，倉促起事`);
     return;
   }
   core(

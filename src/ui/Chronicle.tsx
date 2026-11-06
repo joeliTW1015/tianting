@@ -5,7 +5,7 @@ import type { GameState } from '../core/types';
 import { Cloud } from './art/Scenery';
 
 /** 局末史書。這是整個 UI 中唯一讀得到真相的地方（遊戲已結束）。 */
-export function ChronicleScreen({ state, chron, onMenu }: { state: GameState; chron: Chronicle; onMenu: () => void }) {
+export function ChronicleScreen({ state, chron, onMenu, onReplay }: { state: GameState; chron: Chronicle; onMenu: () => void; onReplay?: () => void }) {
   const [onlyMajor, setOnlyMajor] = useState(true);
   const events = chron.events.filter((e) => !onlyMajor || e.major);
 
@@ -19,18 +19,55 @@ export function ChronicleScreen({ state, chron, onMenu }: { state: GameState; ch
         </svg>
         <div class="seal big">{chron.posthumous}</div>
         <div>
-          <h1>《胤史・{chron.posthumous}帝本紀》</h1>
+          <h1>《胤史・{chron.posthumous}{chron.posthumous === '廢帝' ? '' : '帝'}本紀》</h1>
           <p class="motto">{chron.meaning}</p>
           <p>
-            帝在位{cn(chron.turn)}旬，終於{dateLabel(chron.turn)}。結局：<b>{reasonText(chron.reason)}</b>。史評 <b class="score">{chron.score}</b> 分。
+            帝在位{cn(chron.turn)}旬，終於{dateLabel(chron.turn)}。結局：<b class={`ending e-${chron.ending}`}>{chron.endingName}</b>（{reasonText(chron.reason)}）。史評 <b class="score">{chron.score}</b> 分。
+          </p>
+          <p class="breakdown">
+            {chron.breakdown.map((b) => (
+              <span key={b.label}>
+                {b.label} <b>{b.points > 0 ? `+${b.points}` : b.points}</b>
+              </span>
+            ))}
           </p>
         </div>
         <div class="chron-actions">
           <button class="btn primary" onClick={onMenu} data-testid="menu">
             再開一局
           </button>
+          {onReplay && (
+            <button class="btn ghost" onClick={onReplay}>
+              重看結局
+            </button>
+          )}
         </div>
       </header>
+
+      <section class="paper">
+        <h2>群臣真相</h2>
+        <p class="muted small">你標記的「朕意」與他們真實的忠誠相比。</p>
+        <table class="officials-truth">
+          <thead>
+            <tr>
+              <th>職位</th>
+              <th>姓名</th>
+              <th>真相</th>
+              <th>朕意</th>
+            </tr>
+          </thead>
+          <tbody>
+            {chron.officials.map((o) => (
+              <tr key={o.post + o.name} class={o.match === null ? '' : o.match ? 'ok' : 'bad'}>
+                <td>{o.post}</td>
+                <td>{o.name}</td>
+                <td>{o.truth}</td>
+                <td>{o.belief}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
 
       <section class="paper">
         <h2>天下大事・真相</h2>

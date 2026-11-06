@@ -1,25 +1,18 @@
 import { expect, test, type Page } from '@playwright/test';
 
-let eventShots = 0;
-
-async function endTurn(page: Page) {
-  await page.getByTestId('end-turn').click();
-  const t = page.getByTestId('transition');
-  if (await t.isVisible().catch(() => false)) await t.click({ force: true }).catch(() => {});
-  // 依序關閉事件彈窗（前幾則截圖存證）
-  for (let k = 0; k < 12; k++) {
+async function closeEvents(page: Page, shot?: string) {
+  for (let k = 0; k < 20; k++) {
     const modal = page.getByTestId('event-modal');
-    if (!(await modal.isVisible().catch(() => false))) break;
-    if (eventShots < 4) {
-      await page.waitForTimeout(400);
-      await page.screenshot({ path: `e2e/shots/10-event-${++eventShots}.png` });
-    }
+    if (!(await modal.isVisible().catch(() => false))) return;
+    if (shot && k === 0) await page.screenshot({ path: shot });
+    const choice = page.locator('.event-modal .decision .choice').first();
+    if (await choice.isVisible().catch(() => false)) await choice.click();
     await page.getByTestId('event-next').click();
   }
 }
 
-test('完整玩一局：開局、政務、細讀、硃批、下旨、召見、心證、推進到史書', async ({ page }) => {
-  test.setTimeout(240_000);
+test('完整玩一局：序章、擬旨、朝局、兵棋、內廷、外交、戰報、結局幻燈片、史書', async ({ page }) => {
+  test.setTimeout(600_000);
   const errors: string[] = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -27,118 +20,92 @@ test('完整玩一局：開局、政務、細讀、硃批、下旨、召見、�
   await page.goto('/');
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.locator('.seed-row input').fill('測試二');
+  await page.locator('.seed-row input').fill('測試三');
+  await page.locator('[data-diff="hard"]').click();
   await page.screenshot({ path: 'e2e/shots/01-start.png' });
-
-  await page.locator('.perk').first().click();
+  await page.locator('.perk[data-perk]').first().click();
   await page.getByTestId('ascend').click();
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: 'e2e/shots/02-transition.png' });
-  await page.getByTestId('transition').click({ force: true });
+
+  // 序章幻燈片：看兩張，然後略過
+  await expect(page.getByTestId('slideshow')).toBeVisible();
+  await page.waitForTimeout(1600);
+  await page.screenshot({ path: 'e2e/shots/02-intro-1.png' });
+  await page.getByTestId('slideshow').click();
+  await page.getByTestId('slideshow').click();
+  await page.waitForTimeout(1600);
+  await page.screenshot({ path: 'e2e/shots/03-intro-3.png' });
+  await page.getByTestId('skip').click();
+  await page.getByTestId('transition').click({ force: true }).catch(() => {});
   await expect(page.locator('.topbar')).toBeVisible();
-  await page.screenshot({ path: 'e2e/shots/03-desk.png' });
+  await page.screenshot({ path: 'e2e/shots/04-desk.png' });
+  await page.getByTestId('doc-close').click();
+  await page.screenshot({ path: 'e2e/shots/05-map.png' });
 
-  // 政務：定稅則
-  await page.getByTestId('filter-todo').click();
-  await page.locator('.item', { hasText: '稅則' }).first().click();
-  await page.locator('[data-choice="normal"]').click();
-  await page.getByTestId('confirm-choice').click();
-  await page.screenshot({ path: 'e2e/shots/04-task.png' });
+  // 擬旨：徵兵
+  await page.locator('[data-bar="mil"]').click();
+  await page.locator('[data-edict="recruit"]').click();
+  await page.getByTestId('edict-target').selectOption('shandong');
+  await page.locator('[data-param="5000"]').click();
+  await page.screenshot({ path: 'e2e/shots/06-edict.png' });
+  await page.getByTestId('issue-edict').click();
+  await page.locator('.edict-modal .modal-head .btn').click();
 
-  // 遣番子密查京師；同一旬不能再下同一道旨
-  await page.locator('[data-region="jingshi"]').click({ force: true });
-  await page.locator('[data-order="spy"]').first().click();
-  await page.getByTestId('confirm-order').click();
-  await expect(page.locator('[data-order="spy"]').first()).toBeDisabled();
-  await expect(page.locator('[data-order="spy"]').first()).toContainText('本旬已下旨');
-  // 召山東巡撫入京（之後會有奉召抵京的彈窗）
-  await page.locator('[data-region="shandong"]').click({ force: true });
-  await page.locator('[data-order="recall"]').first().click();
-  await page.getByTestId('confirm-order').click();
+  // 朝局：授權
+  await page.getByTestId('open-court').click();
+  await page.locator('[data-auth="hubu:ask"]').click();
+  await page.screenshot({ path: 'e2e/shots/07-court.png' });
+  await page.locator('.court-modal .modal-head .btn').click();
 
-  // 行程：山東巡撫奉召赴京
-  await page.getByRole('button', { name: '行程', exact: true }).click();
-  await expect(page.locator('.agenda')).toContainText('奉召赴京');
-  await page.screenshot({ path: 'e2e/shots/15-agenda.png' });
+  // 兵棋：點官軍棋子、授方略
+  await page.locator('.token').first().click({ force: true });
+  await page.locator('[data-card="hold"]').click();
+  await page.screenshot({ path: 'e2e/shots/08-army.png' });
 
-  // 內廷：消遣、營建
+  // 內廷：消遣
   await page.getByTestId('open-palace').click();
-  await page.screenshot({ path: 'e2e/shots/16-palace.png' });
-  await page.locator('[data-leisure="calligraphy"]').click();
-  await page.locator('[data-tab="build"]').click();
-  await page.locator('[data-start="clinic"]').click();
-  await page.screenshot({ path: 'e2e/shots/17-build.png' });
-  await page.getByRole('button', { name: '退出' }).click();
+  await page.locator('[data-leisure="garden"]').click();
+  await page.screenshot({ path: 'e2e/shots/09-palace.png' });
+  await page.locator('.palace .btn.ghost').last().click();
 
-  // 召見戶部問天下大勢
-  await page.getByRole('button', { name: '人物', exact: true }).click();
-  await page.locator('[data-summon="hubu"]').click();
-  await page.locator('[data-topic="state"]').click();
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: 'e2e/shots/05-audience.png' });
-  await page.getByRole('button', { name: '退下' }).click();
+  // 外交、後宮
+  await page.getByTestId('open-foreign').click();
+  await page.screenshot({ path: 'e2e/shots/10-foreign.png' });
+  await page.locator('.foreign-modal .modal-head .btn').click();
+  await page.getByTestId('open-harem').click();
+  await page.screenshot({ path: 'e2e/shots/11-harem.png' });
+  await page.locator('.harem-modal .modal-head .btn').click();
 
-  // 推進；每旬細讀一份新文書、處理一件待辦奏請
-  let heldShot = false;
-  for (let i = 0; i < 80; i++) {
-    if (await page.locator('.chronicle').isVisible()) break;
-    await endTurn(page);
-    if (await page.locator('.chronicle').isVisible()) break;
-    const read = page.getByTestId('read');
-    if (await read.isVisible().catch(() => false)) await read.click();
-    const follow = page.getByTestId('follow-advice');
-    if (i % 2 === 0 && (await follow.isVisible().catch(() => false))) await follow.click();
-    const approve = page.getByTestId('approve');
-    if (i % 3 === 0 && (await approve.isVisible().catch(() => false))) await approve.click();
-    if (i === 14) {
-      await page.screenshot({ path: 'e2e/shots/06-midgame.png' });
-      await page.getByRole('button', { name: '心證', exact: true }).click();
-      const opt = page.locator('[data-belief]').first();
-      if (await opt.isVisible().catch(() => false)) await opt.click();
-      await page.screenshot({ path: 'e2e/shots/07-beliefs.png' });
-      await page.getByRole('button', { name: '地方', exact: true }).click();
+  // 推進，直到看到一場戰報並觀戰
+  let watched = false;
+  for (let t = 0; t < 200; t++) {
+    if (await page.getByTestId('slideshow').isVisible().catch(() => false)) break;
+    await page.getByTestId('end-turn').click();
+    const tr = page.getByTestId('transition');
+    if (await tr.isVisible().catch(() => false)) await tr.click({ force: true }).catch(() => {});
+    if (t === 2) await page.screenshot({ path: 'e2e/shots/12-event.png' });
+    if (!watched && (await page.getByTestId('event-battle').isVisible().catch(() => false))) {
+      await page.getByTestId('event-battle').click();
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: 'e2e/shots/13-battle.png' });
+      await page.waitForTimeout(6000);
+      await page.screenshot({ path: 'e2e/shots/14-battle-result.png' });
+      await page.getByTestId('battle-close').click();
+      watched = true;
     }
-    if (i === 30) {
-      await page.screenshot({ path: 'e2e/shots/08-later.png' });
-      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      expect(overflow).toBeLessThanOrEqual(0);
-    }
-    if (i === 18) {
-      await page.getByTestId('open-foreign').click();
-      await page.screenshot({ path: 'e2e/shots/18-foreign.png' });
-      await page.locator('[data-faction="beilu:envoy"]').click();
-      await page.getByTestId('foreign').getByRole('button', { name: '闔上' }).click();
-    }
-    if (i > 8 && !(await page.locator('.held').count().then((n) => n === 0)) && !heldShot) {
-      heldShot = true;
-      await page.waitForTimeout(500);
-      await page.screenshot({ path: 'e2e/shots/19-held.png' });
-    }
-    if (i === 24) {
-      await page.getByTestId('open-finance').click();
-      await page.waitForTimeout(200);
-      const box = page.getByTestId('finance');
-      // 滑過收支柱，顯示明細
-      const bars = box.locator('.bar');
-      if (await bars.count()) await bars.nth((await bars.count()) - 3).hover();
-      await page.screenshot({ path: 'e2e/shots/11-finance-overview.png' });
-      await box.locator('[data-tab="regions"]').click();
-      await page.screenshot({ path: 'e2e/shots/12-finance-regions.png' });
-      await box.locator('[data-tab="outlays"]').click();
-      await page.screenshot({ path: 'e2e/shots/13-finance-outlays.png' });
-      await box.locator('[data-tab="regions"]').click();
-      await box.locator('[data-heat]').first().click();
-      await page.getByTestId('map-tax').click();
-      await page.waitForTimeout(700);
-      await page.screenshot({ path: 'e2e/shots/14-map-tax.png' });
+    if (await page.getByTestId('slideshow').isVisible().catch(() => false)) break;
+    await closeEvents(page);
+    if (t === 8) {
+      await page.getByTestId('map-troops').click();
+      await page.screenshot({ path: 'e2e/shots/15-troops.png' });
     }
   }
-  await expect(page.locator('.chronicle')).toBeVisible();
-  await page.screenshot({ path: 'e2e/shots/09-chronicle.png', fullPage: true });
 
-  await page.getByTestId('menu').click();
-  await expect(page.locator('.history')).toBeVisible();
+  // 結局幻燈片 → 史書
+  await expect(page.getByTestId('slideshow')).toBeVisible();
+  await page.waitForTimeout(1600);
+  await page.screenshot({ path: 'e2e/shots/16-ending.png' });
+  await page.getByTestId('skip').click();
+  await expect(page.getByTestId('menu')).toBeVisible();
+  await page.screenshot({ path: 'e2e/shots/17-chronicle.png', fullPage: false });
   expect(errors).toEqual([]);
-  // 版面不可橫向溢出
-  await page.getByTestId('continue').isVisible().catch(() => false);
 });

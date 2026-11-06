@@ -5,7 +5,7 @@ import { advise, claim, clue, core, fluff, post, request } from '../docs';
 import { REGIONS, regionName } from '../geography';
 import type { CaseState, GameState } from '../types';
 import { addPrestige, clamp, event, flow, gov, makeChar, replaceChar, silver, troops } from '../util';
-import { regionDefense, spawnArmy, armiesOf } from '../war';
+import { crownArmies, regionDefense, spawnArmy, armiesOf } from '../war';
 import { age, cdoc, chance, every, int, noisy, range, resolve, rumor } from './common';
 import type { CaseDef } from './types';
 
@@ -21,11 +21,10 @@ function rebel(s: GameState, c: CaseState, why: string): void {
   const w = s.world;
   const r = w.regions[c.region];
   let size = r.garrison + c.data.enemy * 0.8;
-  for (const d of w.detachments) {
-    if (d.region === c.region && !d.returned && d.arriveTurn <= s.turn) {
-      size += d.troops;
-      d.troops = 0;
-      d.returned = true;
+  for (const a of crownArmies(s)) {
+    if (a.region === c.region && !a.path.length && a.commander === `gov:${c.region}`) {
+      size += a.size;
+      a.active = false;
     }
   }
   r.garrison = 0;

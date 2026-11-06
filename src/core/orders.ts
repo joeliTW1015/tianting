@@ -1,12 +1,16 @@
 // 旨意送達後的處置：先交給疑案，疑案不處理的再走通用處置。
 
 import { caseOrder, CASE_DEFS } from './cases';
-import { claim, clue, core, draft, fluff, local, post, shoufuBias } from './docs';
+import { claim, clue, core, draft, fluff, post, shoufuBias } from './docs';
 import { REGIONS, regionName, travelTurns } from './geography';
 import { routineArrive } from './routine';
 import { amnesty, banSect } from './unrest';
 import { chance, noisy, pick } from './rng';
 import type { GameState, Order, RegionId } from './types';
+import { provoke } from './cases/eunuch';
+import { addGrievance } from './factions';
+import { exposeRoll } from './intel';
+import { range } from './rng';
 import { addPrestige, addUnrest, event, gov, replaceChar, troops } from './util';
 
 export function deliver(state: GameState, o: Order): void {
@@ -43,16 +47,24 @@ function generic(state: GameState, o: Order): void {
       event(state, 'routine', `嚴令${regionName(o.region)}催科之旨到達。`);
       return;
     case 'campaign':
-      // 部隊在下旨時已出發（見 actions.issueOrder），此處只記錄抵達
-      event(state, 'routine', `京營${troops(o.troops ?? 10000)}抵${regionName(o.region)}。`);
       return;
+    case 'impeach': {
+      const id = (o.caseId ?? '').slice(8);
+      const c = state.chars[id];
+      if (!c || c.status !== 'active') return;
+      const f = c.faction;
+      addGrievance(state, f, 10);
+      for (const x of ['yan', 'qing', 'zhe', 'xun'] as const) if (x !== f) addGrievance(state, x, -6);
+      if (f === 'yan') provoke(state, 8);
+      if (c.integrity >= 0.6) state.world.wrongful.push(`${c.title}${c.name}（黨爭罷黜）`);
+      const old = replaceChar(state, id, range(state.rng, 0.4, 0.9));
+      state.chars[id].faction = chance(state.rng, 0.5) ? null : f;
+      if (id === 'dongchang') state.world.dongchang = state.chars[id].faction === 'yan' ? 'eunuch' : 'crown';
+      event(state, 'court', `${c.title}${old}被劾罷官。`, true);
+      return;
+    }
     case 'recall':
       recallGov(state, o.region);
-      return;
-    case 'levy':
-      state.world.regions[o.region].garrison += 5000;
-      addUnrest(state, o.region, 3);
-      event(state, 'routine', `${regionName(o.region)}募得鄉勇五千。`);
       return;
     case 'sectBan':
       banSect(state, o.region);
@@ -61,38 +73,11 @@ function generic(state: GameState, o: Order): void {
       amnesty(state, o.region);
       return;
     case 'arrest':
-      if (o.person === 'shoufu' || o.person === 'dongchang') return dismiss(state, o.person);
       arrestGov(state, o.region);
       return;
     default:
       return;
   }
-}
-
-function dismiss(state: GameState, who: 'shoufu' | 'dongchang'): void {
-  const w = state.world;
-  const c = state.chars[who];
-  const old = c.name;
-  if (who === 'shoufu') {
-    if (shoufuBias(state) === 'clean') {
-      w.wrongful.push(`首輔${old}（罷黜）`);
-      addPrestige(state, -4);
-      event(state, 'court', `罷黜清正之首輔${old}，朝野惋惜。`, true);
-    } else {
-      addPrestige(state, 2);
-      event(state, 'court', `罷黜結黨之首輔${old}，票擬從此較為公允。`, true);
-    }
-  } else {
-    if (w.dongchang === 'capable') {
-      w.wrongful.push(`東廠提督${old}（罷黜）`);
-      event(state, 'court', `罷黜精幹之東廠提督${old}。`, true);
-    } else event(state, 'court', `罷黜羅織邀功之東廠提督${old}。`, true);
-    w.dongchang = 'capable';
-  }
-  replaceChar(state, who);
-  const d = local(draft('notice', 'court', 'jingshi', 'court', who === 'shoufu' ? '新任首輔入閣' : '新任東廠提督視事'), state);
-  core(d, `${c.title}${c.name}到任視事。`, `新任${c.title}${c.name}到任`);
-  post(state, d);
 }
 
 function recallGov(state: GameState, region: RegionId): void {
@@ -134,7 +119,9 @@ function investigate(state: GameState, o: Order): void {
   const region = o.region;
   const g = gov(state, region);
   const cases = state.cases.filter((c) => state.turn >= c.startTurn && c.region === region);
-  const d = draft(spy ? 'secret' : 'envoy', spy ? 'dongchang' : 'yushi', region, cases[0]?.uid ?? 'routine', spy ? `東廠密報・${regionName(region)}` : `巡按${regionName(region)}御史查覆疏`);
+  const sure = spy && w.dongchang === 'crown';
+  const d = draft(spy ? 'secret' : 'envoy', spy ? 'dongchang' : 'yushi', region, cases[0]?.uid ?? 'routine', spy ? `${sure ? '〔確〕' : ''}東廠密報・${regionName(region)}` : `巡按${regionName(region)}御史查覆疏`);
+  d.certified = sure;
   if (!spy) {
     d.fromLabel = `巡按${regionName(region)}御史`;
     d.delay = 1;
@@ -143,7 +130,8 @@ function investigate(state: GameState, o: Order): void {
   if (region === 'jingshi') d.arriveTurn = state.turn;
   const bribeP = Math.max(0, ...cases.map((c) => CASE_DEFS[c.def].bribe?.(state, c) ?? 0), g && g.integrity < 0.35 ? 0.3 : 0);
   const bribed = !spy && chance(r, bribeP);
-  const fabricate = spy && w.dongchang === 'fabricator' && state.perk !== 'spies' && chance(r, 0.35);
+  const fabricate = spy && w.dongchang === 'eunuch' && state.perk !== 'spies' && chance(r, 0.35);
+  const shield = spy && w.dongchang === 'eunuch' && g?.faction === 'yan';
   const bands = ['貪墨', '平平', '清廉'];
   const band = (v: number) => (v >= 0.65 ? 2 : v >= 0.4 ? 1 : 0);
 
@@ -151,17 +139,17 @@ function investigate(state: GameState, o: Order): void {
   else if (g) {
     const reg = w.regions[region];
     const u = reg.unrest;
-    const seenU = bribed ? Math.max(5, u - 30) : noisy(r, u, spy ? 0.2 : 0.1);
+    const seenU = bribed || shield ? Math.max(5, u - 30) : sure ? u : noisy(r, u, spy ? 0.2 : 0.1);
     const mood = seenU >= 65 ? '民情洶洶' : seenU >= 40 ? '民多怨言' : '地方安靜';
     core(d, `訪得${regionName(region)}${mood}。`, mood, `查到當地「${mood}」。`);
     claim(d, `unrest.${region}`, '民情', mood, u >= 65 ? '民情洶洶' : u >= 40 ? '民多怨言' : '地方安靜');
 
     // 官聲：八成五看得準，否則差一級
-    let b = bribed ? 2 : band(g.integrity);
-    if (!bribed && chance(r, spy ? 0.15 : 0.08)) b = b === 1 ? (chance(r, 0.5) ? 0 : 2) : 1;
+    let b = bribed || shield ? 2 : band(g.integrity);
+    if (!bribed && !shield && !sure && chance(r, spy ? 0.15 : 0.08)) b = b === 1 ? (chance(r, 0.5) ? 0 : 2) : 1;
     core(d, `${REGIONS[region].gov}${g.name}官聲${bands[b]}。`, `${g.name}官聲${bands[b]}`, `這位地方長官的風評：${bands[b]}。`);
     claim(d, `fame.${region}`, `${g.name}官聲`, bands[b], bands[band(g.integrity)]);
-    if (!bribed && g.integrity < 0.45 && chance(r, 0.8))
+    if (!bribed && !shield && g.integrity < 0.45 && (sure || chance(r, 0.8)))
       clue(d, '州縣解銀至省，撫院衙門多有扣留，冊報與實收不符。', '撫院扣留解銀，冊報與實收不符', { plain: '各縣送到省城的稅銀，被巡撫衙門扣下一部分；帳面和實際收到的對不上。（地方截留錢糧）' });
 
     if (reg.disaster && state.turn < reg.disaster.until) {
@@ -169,12 +157,14 @@ function investigate(state: GameState, o: Order): void {
       core(d, `${reg.disaster.kind}災${reg.disaster.severity > 0.55 ? '甚重' : '未息'}，${relieved ? '賑濟已到，饑民稍安' : '未見賑濟，饑民流離'}。`, `${reg.disaster.kind}災未息，${relieved ? '已有賑濟' : '未見賑濟'}`, `當地的${reg.disaster.kind}災還沒過去，${relieved ? '救濟已經送到。' : '還沒看到救濟，災民到處流浪。'}`);
     }
     if (REGIONS[region].kind === 'border') {
-      const seen = noisy(r, reg.garrison, spy ? 0.15 : 0.08);
+      const seen = sure ? reg.garrison : noisy(r, reg.garrison, spy ? 0.15 : 0.08);
       const morale = reg.morale >= 0.9 ? '士氣可用' : reg.morale >= 0.65 ? '士氣平平' : '士氣低落';
       core(d, `鎮兵見在約${troops(seen)}，${morale}。`, `鎮兵約${troops(seen)}，${morale}`, `邊鎮實際兵力約 ${Math.round(seen / 1000)} 千人，${morale}。`);
     }
+    if (sure && REGIONS[region].kind !== 'border') core(d, `駐軍名冊${troops(reg.roll)}，實${troops(reg.garrison)}。`, `駐軍實${troops(reg.garrison)}`, `〔確〕當地駐軍實數。`);
+    if (sure) d.claims.push({ key: `troops.${region}`, label: '實兵（東廠）', value: Math.round(reg.garrison), unit: '人' });
     for (const a of w.armies.filter((x) => x.active && x.region === region)) {
-      const seen = noisy(r, a.size, spy ? 0.25 : 0.12);
+      const seen = sure ? a.size : noisy(r, a.size, spy ? 0.25 : 0.12);
       core(d, `境內${a.label}約${troops(seen)}。`, `${a.label}約${troops(seen)}`, `境內有${a.label}大約 ${Math.round(seen / 1000)} 千人。`);
     }
   }
@@ -183,8 +173,9 @@ function investigate(state: GameState, o: Order): void {
     core(d, `訪得${g.name}侵漁百姓，貪墨有據。`, `訪得${g.name}貪墨`, '密探說這位地方長官貪污。（東廠是否邀功羅織？）');
     claim(d, `fame.${region}`, `${g.name}官聲`, '貪墨', bands[band(g.integrity)]);
   }
-  fluff(d, spy ? (region === 'jingshi' ? '番子遍歷六部、內廷、市井，所聞如此，謹密奏。' : '番子扮作行商，往返所見如此，謹密奏。') : '臣奉命按臨，所見如此。', spy ? '（密探的例行收尾）' : '（巡按的例行收尾）');
+  fluff(d, spy ? (region === 'jingshi' ? '番子遍歷六部、內廷、市井，所聞如此，謹密奏。' : '番子扮作行商，往返所見如此，謹密奏。') : '臣奉命按臨，所見如此。', spy ? (sure ? '（東廠已在你手中：以上皆確）' : '（東廠在權閹手中：閹黨的人一律說好話）') : '（巡按的例行收尾）');
   post(state, d);
+  if (spy && region !== 'jingshi') exposeRoll(state, g?.id ?? null);
 }
 
 /** 京師密查：朝中動靜、京營、米價 */
@@ -198,7 +189,7 @@ function capitalReport(state: GameState, d: ReturnType<typeof draft>): void {
   core(d, `京營見兵約${troops(w.jingying)}，${drill}。`, `京營${drill}`, `京營兵力約 ${Math.round(w.jingying / 1000)} 千人，${drill}。`);
   const bias = shoufuBias(state);
   const sf = state.chars.shoufu;
-  const truthful = chance(r, 0.7);
+  const truthful = w.dongchang === 'crown' || chance(r, 0.7);
   const partisan = bias !== 'clean';
   const c = state.cases.find((x) => x.uid === bias);
   if (partisan === truthful) {

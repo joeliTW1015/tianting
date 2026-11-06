@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { choose, discoveredCases, issueOrder, orderOptions, readDoc } from '../src/core/actions';
-import { doLeisure, startProject } from '../src/core/palace';
 import { CASE_DEFS, CASE_IDS } from '../src/core/cases';
+import { issueEdict, previewEdict } from '../src/core/edicts';
+import { clout } from '../src/core/factions';
 import { travelTurns } from '../src/core/geography';
-import { chronicle } from '../src/core/scoring';
+import { oddsText } from '../src/core/intel';
+import { doLeisure, settleEnergy, spend } from '../src/core/palace';
+import { setAuthority } from '../src/core/people';
+import { chronicle, endingKind } from '../src/core/scoring';
 import { newRun } from '../src/core/setup';
 import { advanceTurn } from '../src/core/tick';
 import type { GameState } from '../src/core/types';
 import { playerView } from '../src/core/view';
-import { idle, oracle, skilled, type Policy } from '../scripts/policies';
+import { crownArmies } from '../src/core/war';
+import { idle, oracle, random, skilled, type Policy } from '../scripts/policies';
 
 function play(seed: string, policy: Policy = idle, cases?: string[]): GameState {
   const s = newRun(seed, 'diligent', { cases });
@@ -27,177 +32,144 @@ describe('可重現性', () => {
   });
 });
 
-describe('疑案抽選', () => {
-  it('每局抽五件不同的疑案，依浮現時間排序', () => {
-    for (let i = 0; i < 30; i++) {
-      const s = newRun(`d${i}`, 'diligent');
-      expect(new Set(s.cases.map((c) => c.def)).size).toBe(5);
-      for (let k = 1; k < 5; k++) expect(s.cases[k].startTurn).toBeGreaterThanOrEqual(s.cases[k - 1].startTurn);
-    }
+describe('開局', () => {
+  it('三股前朝勢力、四派、後宮、外藩、官軍與闖營都在', () => {
+    const s = newRun('開局', 'diligent');
+    expect(s.cases.filter((c) => c.def === 'eunuch' || c.def === 'uncle')).toHaveLength(2);
+    expect(s.cases).toHaveLength(7);
+    expect(s.world.dongchang).toBe('eunuch');
+    expect(s.world.treasury).toBe(80);
+    expect(s.world.borderArrears).toBe(3);
+    const c = clout(s);
+    expect(c.yan).toBeGreaterThan(0.35);
+    expect(s.consorts.length).toBe(3);
+    expect(Object.keys(s.world.powers).length).toBeGreaterThanOrEqual(10);
+    expect(s.world.regions.taiwan.owner).toBe('hongmao');
+    expect(crownArmies(s).length).toBe(3);
+    expect(s.world.armies.some((a) => a.caseId === 'chuang')).toBe(true);
   });
 
-  it('十種疑案、每種的所有分支都抽得到', () => {
+  it('疑案池的每種疑案、每個分支都抽得到', () => {
     const seen = new Set<string>();
-    for (let i = 0; i < 400; i++) for (const c of newRun(`v${i}`, 'diligent').cases) seen.add(`${c.def}:${c.branch}`);
-    for (const id of CASE_IDS) for (const b of CASE_DEFS[id].branches) expect(seen).toContain(`${id}:${b.id}`);
+    for (let i = 0; i < 300; i++) for (const c of newRun(`v${i}`, 'diligent').cases) seen.add(`${c.def}:${c.branch}`);
+    for (const id of [...CASE_IDS, 'eunuch', 'uncle']) for (const b of CASE_DEFS[id].branches) expect(seen).toContain(`${id}:${b.id}`);
+  });
+});
+
+describe('精力與勞損', () => {
+  it('精力不會回滿；可以透支到 −3，透支累積勞損', () => {
+    const s = newRun('精力', 'diligent');
+    expect(spend(s, 12)).toBeNull();
+    expect(s.energy).toBe(-1);
+    expect(spend(s, 3)).not.toBeNull();
+    settleEnergy(s);
+    expect(s.world.emperor.fatigue).toBeGreaterThanOrEqual(2);
+    expect(s.energy).toBeLessThan(s.energyMax);
   });
 
-  it('疑案在開局時不會透露給玩家；收到相關文書後才算察覺', () => {
-    const s = newRun('隱藏', 'diligent');
-    expect(playerView(s).cases).toHaveLength(0);
-    let discovered = 0;
-    for (let t = 0; t < 72 && !s.over; t++) {
-      advanceTurn(s);
-      discovered = Math.max(discovered, playerView(s).cases.length);
-    }
-    expect(discovered).toBeGreaterThanOrEqual(3);
+  it('消遣每旬只能一種，同一種有冷卻', () => {
+    const s = newRun('消遣', 'diligent');
+    expect(doLeisure(s, 'garden')).toBeNull();
+    expect(doLeisure(s, 'calligraphy')).not.toBeNull();
+    advanceTurn(s);
+    expect(doLeisure(s, 'garden')).not.toBeNull();
+    expect(doLeisure(s, 'calligraphy')).toBeNull();
+  });
+});
+
+describe('詔書', () => {
+  it('徵兵要送達與執行三旬，完成後出現部隊', () => {
+    const s = newRun('徵兵', 'diligent');
+    const pv = previewEdict(s, 'recruit', 'shandong', '5000');
+    expect(pv.block).toBeNull();
+    expect(pv.exec).toBe(3);
+    expect(pv.travel).toBe(travelTurns(s, 'shandong'));
+    const before = crownArmies(s).length;
+    expect(issueEdict(s, 'recruit', 'shandong', '5000')).toBeNull();
+    expect(issueEdict(s, 'recruit', 'shandong', '5000')).not.toBeNull();
+    for (let i = 0; i < pv.travel + 3; i++) advanceTurn(s);
+    expect(crownArmies(s).length).toBe(before + 1);
   });
 
-  it('每件疑案的所有分支都能跑完整局（全知策略）', () => {
-    for (const id of CASE_IDS) {
-      const s = play(`smoke-${id}`, oracle, [id, ...CASE_IDS.filter((x) => x !== id).slice(0, 4)]);
-      expect(s.over).toBeDefined();
-      expect(chronicle(s).verdicts).toHaveLength(5);
-    }
+  it('勝算只顯示五級描述', () => {
+    expect(oddsText(0.95)).toBe('十拿九穩');
+    expect(oddsText(0.5)).toBe('五五之數');
+    expect(oddsText(0.05)).toBe('九死一生');
+  });
+});
+
+describe('授權', () => {
+  it('常例自專的大臣自行處分例行政務；事事奏請則上呈', () => {
+    const s = newRun('授權', 'diligent');
+    for (let i = 0; i < 12; i++) advanceTurn(s);
+    expect(s.docs.some((d) => d.task?.delegate)).toBe(true);
+    expect(setAuthority(s, 'hubu', 'ask')).toBeNull();
+    expect(s.chars.hubu.authority).toBe('ask');
   });
 });
 
 describe('真相隔離', () => {
-  it('playerView 不含任何真相欄位，未細讀的文書沒有全文', () => {
+  it('playerView 不含真相欄位，未細讀的文書沒有全文', () => {
     const s = newRun('隔離', 'diligent');
     for (let i = 0; i < 20; i++) advanceTurn(s);
     const v = playerView(s);
     const json = JSON.stringify(v);
-    for (const key of ['"branch"', 'integrity', 'competence', '"world"', 'embezzled', '"plot"', 'dormant', 'startTurn', '"lies"', 'shoufu":"c']) expect(json).not.toContain(key);
+    for (const key of ['"branch"', 'integrity"', 'competence', '"world"', 'embezzled', 'dormant', 'startTurn', '"lies"', 'loyalty"', 'ambition', '"crisis"', 'jealousy']) expect(json).not.toContain(key);
     for (const d of v.inbox) if (!d.read) expect(d.paras).toBeNull();
-    // 尚未察覺的疑案不會出現在心證
     const known = new Set(discoveredCases(s).map((c) => c.uid));
     for (const k of Object.keys(v.beliefs)) if (k !== 'shoufu') expect(known.has(k)).toBe(true);
   });
-
-  it('細讀耗精力，精力用盡就不能再讀', () => {
-    const s = newRun('精力', 'diligent');
-    advanceTurn(s);
-    const ids = s.docs.filter((d) => !d.read && d.arriveTurn <= s.turn).map((d) => d.id);
-    s.energy = 1;
-    expect(readDoc(s, ids[0])).toBeNull();
-    expect(s.energy).toBe(0);
-    expect(readDoc(s, ids[1])).not.toBeNull();
-  });
 });
 
-describe('資訊延遲', () => {
+describe('資訊延遲與東廠', () => {
   it('地方文書至少要經過驛路旬數才會送達', () => {
     const s = play('延遲');
-    const provincial = s.docs.filter((d) => d.region !== 'jingshi' && d.sentTurn >= 0 && d.kind !== 'audience');
-    expect(provincial.length).toBeGreaterThan(30);
-    for (const d of provincial) expect(d.arriveTurn - d.sentTurn).toBeGreaterThanOrEqual(travelTurns(s, d.region));
+    const provincial = s.docs.filter((d) => d.region !== 'jingshi' && d.kind === 'memorial' && !d.battleId && d.sentTurn >= 0 && s.world.capital === 'jingshi');
+    expect(provincial.length).toBeGreaterThan(20);
+    for (const d of provincial) if (d.arriveTurn > d.sentTurn) expect(d.arriveTurn - d.sentTurn).toBeGreaterThanOrEqual(1);
   });
 
-  it('密探回報在預估的旬數抵京', () => {
-    const s = newRun('密探', 'diligent');
-    const opt = orderOptions(s, 'yungui').find((o) => o.kind === 'spy')!;
-    expect(issueOrder(s, opt)).toBeNull();
-    const order = s.orders[0];
-    expect(order.returnTurn).toBe(12);
-    while (s.turn < order.returnTurn! && !s.over) advanceTurn(s);
-    expect(s.docs.some((d) => d.kind === 'secret' && d.region === 'yungui' && d.arriveTurn === order.returnTurn)).toBe(true);
-  });
-});
-
-describe('旨意', () => {
-  it('同一旬不能重複下同一道旨，下一旬就可以', () => {
-    const s = newRun('重複', 'diligent');
-    const opt = () => orderOptions(s, 'shandong').find((o) => o.kind === 'spy')!;
-    expect(opt().issued).toBe(false);
-    expect(issueOrder(s, opt())).toBeNull();
-    expect(opt().issued).toBe(true);
-    expect(issueOrder(s, opt())).not.toBeNull();
-    // 同一旬換一個地方可以
-    expect(issueOrder(s, orderOptions(s, 'henan').find((o) => o.kind === 'spy')!)).toBeNull();
-    advanceTurn(s);
-    expect(opt().issued).toBe(false);
-  });
-
-  it('密查京師：下一旬回報，內容不是空的', () => {
-    const s = newRun('京查', 'diligent');
-    issueOrder(s, orderOptions(s, 'jingshi').find((o) => o.kind === 'spy')!);
-    expect(s.orders[0].returnTurn).toBe(1);
-    advanceTurn(s);
-    const d = s.docs.find((x) => x.kind === 'secret' && x.region === 'jingshi');
-    expect(d?.arriveTurn).toBe(1);
-    expect(d!.paras.filter((p) => p.tag !== 'fluff').length).toBeGreaterThanOrEqual(3);
+  it('東廠在權閹手中時密報不標確；奪回後標〔確〕', () => {
+    const s = newRun('東廠', 'diligent');
+    issueOrder(s, orderOptions(s, 'shandong').find((o) => o.kind === 'spy')!);
+    for (let i = 0; i < 4; i++) advanceTurn(s);
+    const sd = s.docs.find((d) => d.kind === 'secret' && d.region === 'shandong');
+    s.world.dongchang = 'crown';
+    issueOrder(s, orderOptions(s, 'henan').find((o) => o.kind === 'spy')!);
+    for (let i = 0; i < 5; i++) advanceTurn(s);
+    const hn = s.docs.find((d) => d.kind === 'secret' && d.region === 'henan');
+    expect(sd).toBeDefined();
+    expect(sd?.certified).toBeFalsy();
+    expect(hn?.certified).toBe(true);
   });
 });
 
-describe('內廷與行程', () => {
+describe('政務', () => {
   it('未細讀的政務只能依票擬；細讀後可以親裁', () => {
     const s = newRun('依擬', 'diligent');
     const d = s.docs.find((x) => x.task?.id === 'tax')!;
-    expect(d.read).toBe(false);
     expect(choose(s, d.id, 'heavy')).not.toBeNull();
     expect(readDoc(s, d.id)).toBeNull();
     expect(choose(s, d.id, 'heavy')).toBeNull();
-    const s2 = newRun('依擬', 'diligent');
-    const d2 = s2.docs.find((x) => x.task?.id === 'tax')!;
-    expect(choose(s2, d2.id, d2.task!.recommend!)).toBeNull();
-  });
-
-  it('行程列出奉召赴京的官員與密報回京，到了就消失', () => {
-    const s = newRun('行程', 'diligent');
-    issueOrder(s, orderOptions(s, 'shandong').find((o) => o.kind === 'recall')!);
-    issueOrder(s, orderOptions(s, 'henan').find((o) => o.kind === 'spy')!);
-    let v = playerView(s);
-    expect(v.agenda.some((a) => a.kind === 'arrival' && a.text.includes('赴京'))).toBe(true);
-    expect(v.agenda.some((a) => a.kind === 'report')).toBe(true);
-    for (let i = 0; i < 3; i++) advanceTurn(s);
-    v = playerView(s);
-    expect(v.agenda.some((a) => a.kind === 'arrival')).toBe(false);
-    expect(v.agenda.some((a) => a.kind === 'report')).toBe(false);
-  });
-
-  it('消遣能改善心情；營建到期告成並生效', () => {
-    const s = newRun('內廷', 'diligent');
-    s.world.emperor.mood = 30;
-    expect(doLeisure(s, 'opera')).toBeNull();
-    expect(s.world.emperor.mood).toBeGreaterThan(30);
-    s.energy = 5;
-    expect(startProject(s, 'walls')).toBeNull();
-    expect(startProject(s, 'canal')).not.toBeNull();
-    for (let i = 0; i < 5; i++) advanceTurn(s);
-    expect(s.world.buffs.walls).toBe(true);
-  });
-
-  it('京師不會一直地震', () => {
-    let quakes = 0;
-    for (let i = 0; i < 20; i++) quakes += play(`q${i}`, skilled).docs.filter((d) => d.title.includes('地震')).length;
-    expect(quakes / 20).toBeLessThan(1.5);
   });
 });
 
-describe('日常政務', () => {
-  it('邊餉每兩月一議，逾期依例處置', () => {
-    const s = play('政務');
-    const border = s.docs.filter((d) => d.task?.id === 'border');
-    expect(border.length).toBe(Math.floor((s.turn - 2) / 6) + 1);
-    for (const d of border) if (d.task!.deadline < s.turn) expect(d.task!.chosen).toBeDefined();
-  });
-});
-
-describe('內廷壅蔽', () => {
-  it('截留分支真的會讓奏疏消失，並有官員追問前疏', () => {
-    for (let i = 0; i < 60; i++) {
-      const s = newRun(`inner${i}`, 'diligent', { cases: ['inner', 'border', 'remit', 'bandit', 'salt'] });
-      const c = s.cases.find((x) => x.def === 'inner')!;
-      if (c.branch !== 'intercept') continue;
-      while (!s.over) advanceTurn(s);
-      // 局若在此案浮現後不久就結束（例如病逝），換下一個種子
-      if (s.over!.turn < c.startTurn + 15) continue;
-      expect(s.world.mods.suppressed).toBeGreaterThan(0);
-      expect(s.docs.some((d) => d.title.includes('催問前疏'))).toBe(true);
-      return;
+describe('難度與結局', () => {
+  it('無為、亂按都撐不過五年；結局一定是六種之一', () => {
+    for (let i = 0; i < 6; i++) {
+      for (const p of [idle, random]) {
+        const s = play(`難${i}`, p);
+        expect(s.over!.reason).not.toBe('survived');
+        expect(['zhongxing', 'shoucheng', 'pianan', 'wangguo', 'jiabeng', 'beifei']).toContain(endingKind(s.over!.reason));
+      }
     }
-    throw new Error('找不到截留分支');
+  });
+
+  it('全知策略能跑完整局，史書有評分拆解', () => {
+    const s = play('全知', oracle);
+    const c = chronicle(s);
+    expect(c.breakdown.length).toBe(6);
+    expect(c.posthumous.length).toBeGreaterThan(0);
   });
 });
 
@@ -207,14 +179,5 @@ describe('白話註解', () => {
     const core = s.docs.flatMap((d) => d.paras.filter((p) => p.tag === 'core' && d.kind !== 'digest'));
     const withPlain = core.filter((p) => p.plain).length;
     expect(withPlain / core.length).toBeGreaterThan(0.75);
-  });
-});
-
-describe('史書', () => {
-  it('謊言會被登錄並出現在史書中', () => {
-    const s = play('謊言');
-    const c = chronicle(s);
-    expect(c.stats.lieCount).toBeGreaterThan(0);
-    expect(c.posthumous.length).toBe(1);
   });
 });

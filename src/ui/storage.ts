@@ -1,14 +1,15 @@
 import type { Chronicle } from '../core/scoring';
 import type { GameState } from '../core/types';
 
-const SAVE = 'tianting.save.v2';
-const HISTORY = 'tianting.history.v2';
+const SAVE = 'tianting.save.v3';
+const HISTORY = 'tianting.history.v3';
 
 export interface HistoryEntry {
   seed: string;
   posthumous: string;
   score: number;
   reason: string;
+  ending?: string;
   turn: number;
   correct: number;
   total: number;
@@ -20,7 +21,7 @@ export function loadGame(): GameState | null {
     const raw = localStorage.getItem(SAVE);
     if (!raw) return null;
     const s = JSON.parse(raw) as GameState;
-    return s.version === 2 ? s : null;
+    return s.version === 3 ? s : null;
   } catch {
     return null;
   }
@@ -51,6 +52,7 @@ export function pushHistory(s: GameState, c: Chronicle): void {
     posthumous: c.posthumous,
     score: c.score,
     reason: c.reason,
+    ending: c.endingName,
     turn: c.turn,
     correct: c.verdicts.filter((v) => v.correct).length,
     total: c.verdicts.length,

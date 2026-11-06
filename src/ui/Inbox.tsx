@@ -28,7 +28,12 @@ interface Props {
 }
 
 export function isTodo(d: DocView, turn: number): boolean {
+  if (d.delegatedBy || d.task?.delegate) return false;
   return !!((d.request && (!d.decision || d.decision === 'shelve')) || (d.task && !d.task.chosen && turn <= d.task.deadline));
+}
+
+export function isDelegated(d: DocView): boolean {
+  return !!(d.delegatedBy || d.task?.delegate);
 }
 
 export function Inbox({ docs, cases, selected, onSelect, turn }: Props) {
@@ -37,12 +42,15 @@ export function Inbox({ docs, cases, selected, onSelect, turn }: Props) {
   let list = docs;
   if (filter === 'todo') list = docs.filter((d) => isTodo(d, turn));
   else if (filter === 'unread') list = docs.filter((d) => !d.read);
+  else if (filter === 'urgent') list = docs.filter((d) => d.urgent);
+  else if (filter === 'deleg') list = docs.filter(isDelegated);
   else if (filter !== 'all') list = docs.filter((d) => d.topic === filter);
 
   const fresh = list.filter((d) => d.arriveTurn === turn);
   const recent = list.filter((d) => d.arriveTurn < turn && d.arriveTurn >= turn - 3);
   const old = list.filter((d) => d.arriveTurn < turn - 3);
   const todo = docs.filter((d) => isTodo(d, turn)).length;
+  const deleg = docs.filter((d) => isDelegated(d) && d.arriveTurn === turn).length;
 
   return (
     <section class="inbox tray">
@@ -58,6 +66,12 @@ export function Inbox({ docs, cases, selected, onSelect, turn }: Props) {
         </button>
         <button class={filter === 'todo' ? 'on' : ''} onClick={() => setFilter('todo')} data-testid="filter-todo">
           待辦{todo ? `（${todo}）` : ''}
+        </button>
+        <button class={filter === 'deleg' ? 'on' : ''} onClick={() => setFilter('deleg')} data-testid="filter-deleg" title="大臣依授權自行處分的事（本旬退朝時生效，可駁回改批）">
+          處分錄{deleg ? `（${deleg}）` : ''}
+        </button>
+        <button class={filter === 'urgent' ? 'on' : ''} onClick={() => setFilter('urgent')}>
+          急報
         </button>
         <button class={filter === 'unread' ? 'on' : ''} onClick={() => setFilter('unread')}>
           未讀
@@ -114,6 +128,9 @@ function Item({ d, on, onSelect, turn }: { d: DocView; on: boolean; onSelect: (i
       <span class="item-flags">
         {!d.read && <em class="flag unread">未讀</em>}
         {todo && <em class="flag ask">{d.task ? '待裁' : d.decision === 'shelve' ? '留中' : '待批'}</em>}
+        {isDelegated(d) && !d.task?.chosen && !d.decision && <em class="flag deleg">代辦</em>}
+        {d.certified && <em class="flag sure">確</em>}
+        {d.battleId !== undefined && <em class="flag war">戰</em>}
         {d.decision && d.decision !== 'shelve' && <em class="flag done">{DECISION_TEXT[d.decision]}</em>}
       </span>
     </button>

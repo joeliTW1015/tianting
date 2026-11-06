@@ -13,7 +13,7 @@ const N = Number(process.argv[2] ?? 300);
 export function playOut(seed: string, policy: Policy): GameState {
   const state = newRun(seed, perkChoices(seed)[0]);
   let guard = 0;
-  while (!state.over && guard++ < 200) {
+  while (!state.over && guard++ < 400) {
     policy(state);
     advanceTurn(state);
   }
@@ -22,7 +22,7 @@ export function playOut(seed: string, policy: Policy): GameState {
 
 const pct = (n: number, d: number) => `${((100 * n) / Math.max(1, d)).toFixed(0)}%`;
 let errors = 0;
-const rows = ['| 策略 | 存活率 | 平均分 | 平均在位(旬) | 京師陷落 | 京營譁變 | 京師大饑 | 群臣廢立 | 病篤駕崩 |', '|---|---|---|---|---|---|---|---|---|'];
+const rows = ['| 策略 | 撐滿五年 | 中興 | 平均分 | 平均在位(旬) | 亡國 | 駕崩 | 被廢 |', '|---|---|---|---|---|---|---|---|'];
 const caseStats: Record<string, Record<string, Record<string, { pts: number; n: number }>>> = {};
 let docsPerTurn = 0;
 let tasksPerTurn = 0;
@@ -33,7 +33,7 @@ for (const [name, policy] of Object.entries(POLICIES)) {
   let survived = 0;
   let score = 0;
   let turns = 0;
-  const reasons: Record<string, number> = { capital: 0, mutiny: 0, famine: 0, coup: 0, illness: 0 };
+  const reasons: Record<string, number> = {};
   for (let i = 0; i < N; i++) {
     let s: GameState;
     try {
@@ -44,8 +44,8 @@ for (const [name, policy] of Object.entries(POLICIES)) {
       continue;
     }
     const c = chronicle(s);
-    if (c.reason === 'survived') survived++;
-    else reasons[c.reason]++;
+    if (['survived', 'southern', 'zhongxing'].includes(c.reason)) survived++;
+    reasons[c.ending] = (reasons[c.ending] ?? 0) + 1;
     score += c.score;
     turns += c.turn;
     for (const v of c.verdicts) {
@@ -68,10 +68,10 @@ for (const [name, policy] of Object.entries(POLICIES)) {
       }
     }
   }
-  rows.push(`| ${name} | ${pct(survived, N)} | ${(score / N).toFixed(1)} | ${(turns / N).toFixed(1)} | ${pct(reasons.capital, N)} | ${pct(reasons.mutiny, N)} | ${pct(reasons.famine, N)} | ${pct(reasons.coup, N)} | ${pct(reasons.illness, N)} |`);
+  rows.push(`| ${name} | ${pct(survived, N)} | ${pct(reasons.zhongxing ?? 0, N)} | ${(score / N).toFixed(1)} | ${(turns / N).toFixed(1)} | ${pct(reasons.wangguo ?? 0, N)} | ${pct(reasons.jiabeng ?? 0, N)} | ${pct(reasons.beifei ?? 0, N)} |`);
 }
 
-console.log(`\n模擬 ${N} 局 × ${Object.keys(POLICIES).length} 策略（一局 72 旬）\n`);
+console.log(`\n模擬 ${N} 局 × ${Object.keys(POLICIES).length} 策略（一局最多 180 旬）\n`);
 console.log(rows.join('\n'));
 console.log('\n各疑案・各分支的平均處置得分（滿分 20）');
 const names = Object.keys(POLICIES);

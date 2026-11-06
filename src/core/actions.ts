@@ -5,6 +5,7 @@ import { audience, SUMMONABLE } from './court';
 import { REGIONS, regionName, travelTurns } from './geography';
 import { applyChoice } from './routine';
 import type { CaseState, CharId, Decision, GameState, RegionId, Trust } from './types';
+import { spend } from './palace';
 import { flow, gov } from './util';
 import { sendDetachment } from './war';
 
@@ -42,25 +43,17 @@ export function orderOptions(state: GameState, region: RegionId): OrderOption[] 
   const o: OrderOption[] = [];
   const add = (x: Partial<OrderOption> & { kind: string; label: string; desc: string }) => o.push({ region, energy: 1, troops: 0, silver: 0, ...x });
   const info = REGIONS[region];
-  add({ kind: 'spy', label: '遣東廠番子密查', silver: 3, desc: '派密探暗中查訪：快、能查到內情；但東廠提督若好大喜功，回報可能夾帶捏造的罪名。往返都要走驛路。' });
+  add({ kind: 'spy', label: '遣東廠番子密查', silver: 3, desc: state.world.dongchang === 'crown' ? '東廠已在你手中：密報完全確實（標〔確〕）。往返都要走驛路；有曝光之險。' : '東廠還在權閹手中：閹黨的事一律說好話，清流常被扣罪名。往返都要走驛路。' });
   if (region !== 'jingshi') {
     add({ kind: 'envoy', label: '遣巡按御史查核', silver: 2, desc: '派御史公開巡查：較周詳，比密探多一旬；但可能被地方收買或被安排好的場面蒙蔽。' });
     const g = gov(state, region);
-    add({ kind: 'campaign', troops: 10000, silver: 10, label: '發京營一萬赴援', desc: '派京營一萬人前往，駐紮六旬後回京。可剿賊、可增援邊鎮；出征期間每旬多耗錢糧，京師兵力減少。' });
     add({ kind: 'recall', person: g.id, label: `召${info.gov}入京陛見`, desc: '把地方長官叫來當面問話。心中無鬼的會來；有的人會拖延或推辭——這本身就是線索。' });
     add({ kind: 'arrest', person: g.id, label: `革職拿問${info.gov}`, desc: '撤換並查辦地方長官。抓對了是整肅，抓錯了是冤獄（朝望下降）。新任者到任後會回報前任底細。' });
   }
-  if (region !== 'jingshi') add({ kind: 'levy', silver: 15, label: '募兵五千', desc: '在當地招募鄉勇五千人補充駐軍（兩旬成軍）；當地民心略降。' });
   if (info.kind === 'province') {
     add({ kind: 'sectBan', silver: 3, label: '查禁邪教', desc: '查拿秘密教門。教門尚小時可防患未然；若已坐大，查禁可能逼其提前起事。' });
     add({ kind: 'amnesty', silver: 15, label: '招撫亂民', desc: '對境內的亂民宣布招安。民心已好轉時大多會散去；民心太差時效果有限。朝望 −1。' });
-    add({ kind: 'relief', amount: 20, silver: 20, label: '發帑賑濟二十萬兩', desc: '送到後當地民心回升；吏治差時一部分會被侵吞。' });
-    add({ kind: 'remit', label: '蠲免錢糧四月', desc: '送到後該省四個月只繳三成錢糧，民心回升。' });
     add({ kind: 'press', label: '嚴令催科', desc: '送到後該省三個月多收一成五錢糧，但民心惡化。' });
-  }
-  if (region === 'jingshi') {
-    add({ kind: 'arrest', person: 'shoufu', label: '罷免首輔', desc: '換人寫票擬。若首輔清正，是罷黜賢相（朝望 −4）；若他有私心，票擬從此公允。' });
-    add({ kind: 'arrest', person: 'dongchang', label: '罷免東廠提督', desc: '換一位新提督（新任者精幹，不會羅織）。若原提督本就精幹，則是冤黜。' });
   }
   for (const c of discoveredCases(state)) {
     if (c.region !== region) continue;
@@ -88,15 +81,15 @@ export function issueOrder(state: GameState, opt: OrderOption): string | null {
   if (state.over) return '本局已終。';
   const w = state.world;
   if (issuedThisTurn(state, opt)) return '本旬已下過此旨。';
-  if (state.energy < opt.energy) return '精力不足。';
+  if (state.world.cooldown.restTurn === state.turn) return '本旬罷朝靜養，不再下旨。';
   if (w.treasury < opt.silver) return `戶部奏：庫銀不足 ${opt.silver} 萬兩。`;
   if (opt.troops && w.jingying - opt.troops < MIN_JINGYING) return '兵部奏：京營不可再調，否則京師空虛。';
   if (opt.kind === 'arrest' && state.orders.some((x) => x.kind === 'arrest' && x.person === opt.person && x.status === 'transit')) return '拿問之旨已在途中。';
-  state.energy -= opt.energy;
+  const err = spend(state, opt.energy);
+  if (err) return err;
   flow(state, orderCat(opt.kind), opt.label, { silver: -opt.silver });
-  w.jingying -= opt.troops;
   const travel = travelTurns(state, opt.region);
-  if (opt.kind === 'campaign') sendDetachment(state, opt.region, opt.troops, Math.max(1, travel));
+  if (opt.kind === 'campaign') sendDetachment(state, opt.region, opt.troops);
   const back = opt.kind === 'spy' ? travel : opt.kind === 'envoy' || opt.kind === 'inspect' ? travel + 1 : opt.kind === 'audit' ? travel : opt.kind === 'retest' ? 2 : opt.kind === 'registry' ? 0 : undefined;
   state.orders.push({
     id: state.nextId++,
@@ -133,9 +126,8 @@ export function decide(state: GameState, docId: number, decision: Decision): str
     if (w.treasury < cost) return `戶部奏：庫銀不足 ${cost} 萬兩。`;
     if (troops && w.jingying - troops < MIN_JINGYING) return '兵部奏：京營不可再調。';
     flow(state, req.kind === 'campaign' ? '軍費' : req.kind === 'relief' ? '賑濟' : '撥款', req.desc, { silver: -cost });
-    w.jingying -= troops;
     const travel = travelTurns(state, req.region);
-    if (troops) sendDetachment(state, req.region, troops, Math.max(1, travel));
+    if (troops) sendDetachment(state, req.region, troops);
     state.orders.push({
       id: state.nextId++,
       kind: req.kind,
@@ -166,12 +158,12 @@ export function choose(state: GameState, docId: number, choiceId: string): strin
   const c = doc.task.choices.find((x) => x.id === choiceId);
   if (!c) return '無此選項。';
   const w = state.world;
-  if ((c.energy ?? 0) > state.energy) return '精力不足。';
   if ((c.silver ?? 0) > w.treasury) return `戶部奏：庫銀不足 ${c.silver} 萬兩。`;
   if ((c.grain ?? 0) > w.grain) return `太倉存糧不足 ${c.grain} 萬石。`;
   if ((c.privy ?? 0) > w.privy) return `內帑不足 ${c.privy} 萬兩。`;
   if (c.troops && w.jingying - c.troops < MIN_JINGYING) return '兵部奏：京營不可再調。';
-  state.energy -= c.energy ?? 0;
+  const err = spend(state, c.energy ?? 0);
+  if (err) return err;
   doc.task.chosen = choiceId;
   applyChoice(state, doc, choiceId);
   state.stats.tasks += 1;
@@ -183,8 +175,9 @@ export function readDoc(state: GameState, docId: number): string | null {
   const doc = state.docs.find((d) => d.id === docId);
   if (!doc || doc.arriveTurn > state.turn) return '無此文書。';
   if (doc.read) return null;
-  if (state.energy < 1) return '精力不足，今旬已無法細讀。';
-  state.energy -= 1;
+  if (state.world.cooldown.restTurn === state.turn) return '本旬罷朝靜養，不能細讀。';
+  const err = spend(state, 1);
+  if (err) return err;
   doc.read = true;
   state.stats.reads += 1;
   state.world.emperor.reads += 1;
@@ -194,9 +187,10 @@ export function readDoc(state: GameState, docId: number): string | null {
 export function summon(state: GameState, who: CharId, topic: string): string | null {
   if (state.over) return '本局已終。';
   if (!SUMMONABLE.includes(who)) return '此人不在京中。';
-  if (state.energy < 2) return '精力不足（召見需二點）。';
   if (topic !== 'state' && !discoveredCases(state).some((c) => c.uid === topic)) return '朕尚未聞知此事。';
-  state.energy -= 2;
+  const already = state.log.some((l) => l.turn === state.turn && l.text.startsWith('召見'));
+  const err = spend(state, already ? 1 : 2);
+  if (err) return err;
   state.stats.summons += 1;
   audience(state, who, topic);
   log(state, `召見${state.chars[who].title}${state.chars[who].name}`);

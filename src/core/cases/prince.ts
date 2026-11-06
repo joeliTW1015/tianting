@@ -65,7 +65,7 @@ function govReport(s: GameState, c: CaseState): void {
 export const prince: CaseDef = {
   id: 'prince',
   name: '藩王異動',
-  regions: ['henan', 'huguang', 'jiangxi', 'sichuan', 'shanxi'],
+  regions: ['huguang', 'jiangxi', 'sichuan', 'shanxi'],
   branches: [
     { id: 'slandered', label: '遭人誣陷' },
     { id: 'greedy', label: '貪婪擾民' },

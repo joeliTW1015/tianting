@@ -34,13 +34,18 @@ const ROBE: Record<string, [string, string]> = {
   emperor: ['#e0aa22', '#a87a12'],
   chief: ['#33405e', '#232d44'],
   scholar: ['#5d7f99', '#46647b'],
+  empress: ['#c0392b', '#8e2a22'],
+  c0: ['#c25a7a', '#93405c'],
+  c1: ['#7a5aa8', '#5a4080'],
+  c2: ['#3f8a7a', '#2c6559'],
+  c3: ['#d07a3a', '#a85a24'],
 };
 
 export function Portrait({ look, kind, rank = 2, size = 64, muted, frame = true, expression }: Props) {
   const p = picker(look);
   const skinI = p(SKIN.length);
   const sick = expression === 'sick';
-  const skin = sick ? '#e6ddc9' : SKIN[skinI];
+  const skin = sick ? '#e6ddc9' : kind === 'consort' || kind === 'empress' ? '#f5dcc4' : SKIN[skinI];
   const shade = sick ? '#c9bfa8' : SKIN_SHADE[skinI];
   const faceW = 19 + p(5);
   const faceH = 24 + p(4);
@@ -63,12 +68,13 @@ export function Portrait({ look, kind, rank = 2, size = 64, muted, frame = true,
     mouth = 2;
     eyes = 1;
   }
-  const age = p(3);
-  const beardKind = kind === 'emperor' ? 1 + p(2) : kind === 'eunuch' || kind === 'prince' ? (kind === 'prince' ? p(2) : 0) : p(5);
+  const female = kind === 'consort' || kind === 'empress';
+  const age = female ? 0 : p(3);
+  const beardKind = female ? 0 : kind === 'emperor' ? 1 + p(2) : kind === 'eunuch' || kind === 'prince' ? (kind === 'prince' ? p(2) : 0) : p(5);
   const robeKey =
-    kind === 'emperor' ? 'emperor' : kind === 'eunuch' ? 'eunuch' : kind === 'prince' ? 'prince' : kind === 'chieftain' ? 'chief' : kind === 'scholar' ? 'scholar' : rank <= 2 ? 'red' : rank === 3 ? 'blue' : 'green';
+    kind === 'empress' ? 'empress' : kind === 'consort' ? `c${p(4)}` : kind === 'emperor' ? 'emperor' : kind === 'eunuch' ? 'eunuch' : kind === 'prince' ? 'prince' : kind === 'chieftain' ? 'chief' : kind === 'scholar' ? 'scholar' : rank <= 2 ? 'red' : rank === 3 ? 'blue' : 'green';
   const [robe, robeDark] = ROBE[robeKey];
-  const bg = kind === 'emperor' ? '#6b4a12' : kind === 'military' ? '#3d4a52' : kind === 'eunuch' ? '#4a3a33' : kind === 'prince' ? '#5b4320' : kind === 'chieftain' ? '#3a4a3c' : '#4b4038';
+  const bg = female ? '#5a3040' : kind === 'emperor' ? '#6b4a12' : kind === 'military' ? '#3d4a52' : kind === 'eunuch' ? '#4a3a33' : kind === 'prince' ? '#5b4320' : kind === 'chieftain' ? '#3a4a3c' : '#4b4038';
   const hair = age === 2 ? '#8a8580' : '#1d1a18';
   const id = `p${look}`;
   const cx = 50;
@@ -229,7 +235,35 @@ export function Portrait({ look, kind, rank = 2, size = 64, muted, frame = true,
         {expression === 'angry' && <path d={`M${cx - 3},${fy - 14} l3,3 l3,-3`} stroke={shade} stroke-width="1.4" fill="none" />}
 
         {/* 冠帽 */}
-        {kind === 'civil' || kind === 'scholar' ? (
+        {female ? (
+          <g>
+            <path d={`M${cx - faceW - 3},${fy + 4} Q${cx - faceW - 6},${fy - 30} ${cx},${fy - 30} Q${cx + faceW + 6},${fy - 30} ${cx + faceW + 3},${fy + 4} Q${cx + faceW - 2},${fy - 16} ${cx},${fy - 20} Q${cx - faceW + 2},${fy - 16} ${cx - faceW - 3},${fy + 4} Z`} fill="#1d1a18" />
+            <ellipse cx={cx} cy={fy - 36} rx="15" ry="11" fill="#1d1a18" />
+            <ellipse cx={cx - 14} cy={fy - 30} rx="7" ry="6" fill="#1d1a18" />
+            <ellipse cx={cx + 14} cy={fy - 30} rx="7" ry="6" fill="#1d1a18" />
+            {kind === 'empress' ? (
+              <g>
+                <path d={`M${cx - 20},${fy - 30} L${cx - 14},${fy - 50} L${cx - 6},${fy - 38} L${cx},${fy - 54} L${cx + 6},${fy - 38} L${cx + 14},${fy - 50} L${cx + 20},${fy - 30} Z`} fill="#e0b54a" stroke="#8a5a10" stroke-width="0.8" />
+                <circle cx={cx} cy={fy - 40} r="2.6" fill="#b5321f" />
+                <path d={`M${cx + 20},${fy - 30} q8,6 6,18`} stroke="#e0b54a" stroke-width="1.4" fill="none" />
+                <path d={`M${cx - 20},${fy - 30} q-8,6 -6,18`} stroke="#e0b54a" stroke-width="1.4" fill="none" />
+              </g>
+            ) : (
+              <g>
+                <line x1={cx + 6} y1={fy - 40} x2={cx + 24} y2={fy - 48} stroke="#e0b54a" stroke-width="1.6" />
+                <circle cx={cx + 24} cy={fy - 48} r="2.2" fill="#e0b54a" />
+                <path d={`M${cx + 18},${fy - 46} l0,9`} stroke="#e0b54a" stroke-width="0.8" />
+                <circle cx={cx + 18} cy={fy - 36} r="1.6" fill="#f3e6c8" />
+                <circle cx={cx - 12} cy={fy - 38} r="3.2" fill={p(2) ? '#e88aa0' : '#f3c06a'} />
+              </g>
+            )}
+            <path d={`M${cx - 4},${fy + 13} Q${cx},${fy + 15} ${cx + 4},${fy + 13}`} stroke="#c0392b" stroke-width="2.2" fill="none" stroke-linecap="round" />
+            <g fill="#e88a7a" opacity="0.3">
+              <ellipse cx={cx - 11} cy={fy + 6} rx="4" ry="2.4" />
+              <ellipse cx={cx + 11} cy={fy + 6} rx="4" ry="2.4" />
+            </g>
+          </g>
+        ) : kind === 'civil' || kind === 'scholar' ? (
           kind === 'scholar' ? (
             <path d={`M${cx - faceW - 1},${fy - 16} L${cx - faceW + 2},${fy - 34} L${cx + faceW - 2},${fy - 34} L${cx + faceW + 1},${fy - 16} Z`} fill="#25211e" />
           ) : (

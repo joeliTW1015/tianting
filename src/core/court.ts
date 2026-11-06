@@ -7,19 +7,7 @@ import { chance, pick } from './rng';
 import type { CharId, GameState } from './types';
 import { gov, silver } from './util';
 
-export const CAPITAL_OFFICIALS: [CharId, string, number][] = [
-  ['shoufu', '首輔', 1],
-  ['silijian', '司禮監掌印', 1],
-  ['dongchang', '東廠提督', 2],
-  ['hubu', '戶部尚書', 1],
-  ['bingbu', '兵部尚書', 1],
-  ['libu', '吏部尚書', 1],
-  ['rites', '禮部尚書', 1],
-  ['gongbu', '工部尚書', 1],
-  ['yushi', '都御史', 2],
-];
-
-export const SUMMONABLE: CharId[] = CAPITAL_OFFICIALS.map((x) => x[0]);
+export const SUMMONABLE: CharId[] = ['shoufu', 'cifu', 'silijian', 'dongchang', 'jinyiwei', 'jingying', 'hubu', 'bingbu', 'libu', 'rites', 'gongbu', 'xingbu', 'yushi'];
 
 const mood = (v: number) => (v >= 65 ? '民情洶洶' : v >= 40 ? '民多怨言' : '地方安靜');
 
@@ -27,7 +15,30 @@ export function courtTick(state: GameState): void {
   const t = state.turn;
   if (t % 3 === 0) revenueDigest(state);
   if (t % 4 === 1) provinceDigest(state);
-  if (t % 5 === 3 || (state.perk === 'censors' && t % 5 === 0)) impeachment(state);
+  if (t % 3 === 2) troopDigest(state);
+  // 言路越開，彈章越多
+  const gap = state.world.speech >= 60 ? 3 : state.world.speech >= 35 ? 5 : state.world.speech >= 20 ? 7 : 10;
+  if (t % gap === gap - 2 || (state.perk === 'censors' && t % 5 === 0)) impeachment(state);
+}
+
+/** 兵部各鎮兵數冊：據報的是名冊（主將忠誠低時再灌水） */
+function troopDigest(state: GameState): void {
+  const w = state.world;
+  const d = local(draft('digest', 'bingbu', 'jingshi', 'war', '兵部各鎮兵數冊'), state);
+  d.free = true;
+  const lines: string[] = [];
+  for (const p of REGION_ORDER) {
+    const r = w.regions[p];
+    if (r.heldBy) continue;
+    const g = gov(state, p);
+    const pad = g && g.loyalty < 45 ? 1 + (60 - g.loyalty) / 100 : 1;
+    const v = p === w.capital ? w.jingyingRoll + r.roll : r.roll * pad;
+    if (v < 100) continue;
+    lines.push(`${regionName(p)}${Math.round(v / 1000)}千`);
+    claim(d, `troops.${p}`, '兵數（兵部冊報）', Math.round(v), r.garrison + (p === w.capital ? w.jingying : 0), { unit: '人', tol: 0.3 });
+  }
+  core(d, `兵部謹奏：各鎮各省見在兵數（名冊）：${lines.join('、')}。`, '各鎮兵數冊', '兵部依名冊報的各地兵數。名冊常常比實際多（吃空餉）：要知道實數，得派員點驗或東廠密查。');
+  post(state, d);
 }
 
 /** 戶部：各省實解錢糧（據實） */
@@ -58,7 +69,7 @@ function provinceDigest(state: GameState): void {
     if (p === 'jingshi') continue;
     const g = gov(state, p);
     const u = w.regions[p].unrest;
-    const shown = g.integrity < 0.4 ? Math.max(5, u - 25) : u;
+    const shown = g.integrity < (w.speech < 20 ? 0.6 : 0.4) ? Math.max(5, u - 25) : u;
     lines.push(`${regionName(p)}「${mood(shown)}」`);
     claim(d, `unrest.${p}`, `${regionName(p)}民情（自報）`, mood(shown), mood(u));
   }
@@ -68,7 +79,7 @@ function provinceDigest(state: GameState): void {
 
 function impeachment(state: GameState): void {
   const r = state.rng;
-  const accurate = chance(r, state.perk === 'censors' ? 0.85 : 0.5);
+  const accurate = chance(r, state.perk === 'censors' ? 0.85 : 0.35 + state.world.speech / 200);
   const guilty: { id: CharId; caseId: string }[] = [];
   for (const c of state.cases) {
     if (state.turn < c.startTurn || c.resolved) continue;
@@ -94,7 +105,7 @@ function impeachment(state: GameState): void {
 
 // ───────────────────────── 召見奏對 ─────────────────────────
 
-const ACCURACY: Record<string, number> = { shoufu: 0.65, silijian: 0.5, dongchang: 0.6, hubu: 0.5, bingbu: 0.4, libu: 0.55, rites: 0.45, gongbu: 0.45, yushi: 0.55 };
+const ACCURACY: Record<string, number> = { shoufu: 0.65, cifu: 0.55, silijian: 0.5, dongchang: 0.6, jinyiwei: 0.5, jingying: 0.4, hubu: 0.5, bingbu: 0.4, libu: 0.55, rites: 0.45, gongbu: 0.45, xingbu: 0.5, yushi: 0.55 };
 
 export function audience(state: GameState, who: CharId, topic: string): void {
   const r = state.rng;
@@ -120,10 +131,10 @@ export function audience(state: GameState, who: CharId, topic: string): void {
   if (who === 'shoufu' && shoufuBias(state) === c.uid) {
     const innocent = def.opinions[pick(r, others).id];
     core(d, `臣愚見：${innocent}。言者紛紛，多出嫌隙，不足深信。`, `首輔力言：${innocent}`, `首輔說：「${innocent}」，要你別理會其他人的說法。`);
-  } else if (who === 'dongchang' && w.dongchang === 'fabricator' && state.perk !== 'spies') {
+  } else if (who === 'dongchang' && w.dongchang === 'eunuch' && state.perk !== 'spies') {
     const harsh = def.opinions[def.branches[def.branches.length - 1].id];
     core(d, `奴婢早有風聞：${harsh}。皇上若許奴婢多遣番子，必能查出實據。`, `東廠提督斷言：${harsh}`, `東廠提督很肯定地說：「${harsh}」，還想要更多人手去查。`);
-  } else if (who === 'silijian' && c.def === 'inner' && c.branch !== 'slandered') {
+  } else if (who === 'silijian' && c.def === 'eunuch') {
     core(d, '奴婢一片丹心，天日可表。外廷結黨，必欲去奴婢而後快。', '司禮監自陳丹心，指外廷結黨', '司禮監首領說自己忠心耿耿，是外面的大臣結黨要整他。');
   } else {
     const o = opinion(acc);
@@ -150,7 +161,7 @@ function stateAudience(state: GameState, who: CharId, d: ReturnType<typeof draft
       break;
     case 'bingbu': {
       const ms = (['jizhen', 'xuanda', 'liaodong', 'gansu'] as const).map((b) => `${regionName(b)}${w.regions[b].morale >= 0.9 ? '士氣可用' : w.regions[b].morale >= 0.65 ? '士氣平平' : '士氣低落'}`);
-      core(d, `兵部尚書奏對：${ms.join('，')}。京營見兵${Math.round(w.jingying / 1000)}千。${w.borderArrears >= 1 ? '邊餉積欠，軍心浮動。' : ''}`, '兵部奏報四邊士氣', `兵部尚書報告各邊鎮士氣：${ms.join('、')}。`);
+      core(d, `兵部尚書奏對：${ms.join('，')}。京營名冊${Math.round(w.jingyingRoll / 1000)}千。${w.borderArrears >= 1 ? `邊餉積欠${Math.round(w.borderArrears)}月，軍心浮動。` : ''}`, '兵部奏報四邊士氣', `兵部尚書報告各邊鎮士氣：${ms.join('、')}。`);
       break;
     }
     case 'libu':

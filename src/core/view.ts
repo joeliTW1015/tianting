@@ -2,12 +2,20 @@
 
 import { caseTitle, CASE_DEFS } from './cases';
 import { discoveredCases } from './actions';
-import { energyCap, ILL_TEXT, LEISURE, leisureHint, MOOD_TEXT, moodBand, PROJECTS, projectState } from './palace';
+import { energyCap, FATIGUE_TEXT, fatigueBand, ILL_TEXT, LEISURE, leisureBlock, leisureHint, MOOD_TEXT, moodBand, PROJECTS, projectState } from './palace';
 import { isFloodSeason } from './calendar';
-import { foreignActions, POWERS } from './foreign';
+import { alive, foreignActions, POWERS, STANDING_TEXT } from './foreign';
 import { hashSeed } from './rng';
-import { REGION_ORDER, REGIONS, regionName, travelTurns } from './geography';
-import type { CharId, CharKind, Choice, Claim, Decision, DocKind, FlowEntry, GameState, LedgerEntry, PerkId, RegionId, Request, Trust } from './types';
+import { ALL_REGIONS, REGION_ORDER, REGIONS, regionName, travelTurns } from './geography';
+import { balanced, clout, dominant } from './factions';
+import { affectionText, CONSORT_TEMPER, RANKS } from './harem';
+import { DOWAGER_TEXT, guardLevel, GUARD_TEXT } from './intrigue';
+import { oddsText } from './intel';
+import { abilReport, abilText, allPosts, AUTH_TEXT, demeanor, FACTION_COLOR, FACTION_NAME, FACTIONS, postOf, STANCE_TEXT, TEMPER_TEXT } from './people';
+import { STATUS_DEFS } from './statuses';
+import { zhongxing } from './tick';
+import { CARDS, crownArmies, MORALE_TEXT, moraleBand, UNITS } from './war';
+import type { Abilities, Authority, BattleRecord, CharId, CharKind, Choice, Claim, Decision, Difficulty, DocKind, FactionId, FlowEntry, GameState, LedgerEntry, PerkId, RegionId, Request, Trust } from './types';
 
 export interface ParaView {
   text: string;
@@ -36,12 +44,17 @@ export interface DocView {
   claims: Claim[] | null;
   request?: Request;
   decision?: Decision;
-  task?: { choices: Choice[]; chosen?: string; deadline: number; fallback: string; recommend?: string };
+  task?: { choices: Choice[]; chosen?: string; deadline: number; fallback: string; recommend?: string; delegate?: { by: string; byLook?: number; choice: string; label: string; why: string } };
   highlight?: string;
   read: boolean;
   free: boolean;
   urgent: boolean;
   isNew: boolean;
+  importance: number;
+  certified: boolean;
+  battleId?: number;
+  lot?: { tier: number; ok: boolean; label: string };
+  delegatedBy?: string;
 }
 
 export interface KnownFact {
@@ -66,6 +79,12 @@ export interface RegionView {
   held?: string;
   /** 最近所報的敵軍 */
   foe?: { size: number; turn: number; source: string };
+  owner: string;
+  ownerName: string;
+  ownerColor: string;
+  control: number;
+  /** 據報兵數（最新一筆） */
+  troops?: { value: number; source: string; turn: number; certified: boolean };
 }
 
 export interface OrderView {
@@ -122,7 +141,7 @@ export interface PalaceView {
   westerner: boolean;
   buffs: string[];
   projects: { id: string; name: string; cost: number; turns: number; effect: string; privy: boolean; status: 'idle' | 'building' | 'done'; doneTurn?: number; locked: boolean }[];
-  leisure: { id: string; name: string; energy: number; silver: number; privy: number; desc: string; hint: string }[];
+  leisure: { id: string; name: string; energy: number; silver: number; privy: number; desc: string; hint: string; block: string | null }[];
 }
 
 export type AgendaKind = 'order' | 'report' | 'arrival' | 'army' | 'project' | 'deadline' | 'calendar' | 'palace';
@@ -138,22 +157,111 @@ export interface AgendaItem {
   charKind?: CharKind;
 }
 
-export interface ForeignView {
+export interface ArmyView {
+  id: number;
+  label: string;
+  region: RegionId;
+  unit: string;
+  /** 據報（名冊）兵數 */
+  reported: number;
+  /** 點驗、監軍、親征時的實數 */
+  real?: number;
+  commander?: { id: string; name: string; look: number; kind: CharKind; stance: string; authority: Authority };
+  morale: string;
+  moraleBand: number;
+  mission: string;
+  path: RegionId[];
+  eta?: number;
+  stratagem?: string;
+  posture?: string;
+  campaign: boolean;
+  fromCapital: boolean;
+}
+
+export interface PowerView {
   id: string;
   name: string;
-  kind: 'enemy' | 'tributary';
-  borders: RegionId[];
+  kind: string;
+  color: string;
+  desc: string;
+  standing: string;
+  alive: boolean;
+  regions: RegionId[];
+  home: RegionId;
   stance?: { value: string; source: string; turn: number };
   strength?: { value: number; source: string; turn: number };
-  lastTribute?: number;
-  raids: number;
   trade: boolean;
+  tributePay: number;
+  allyPay: number;
+  raids: number;
   look: number;
-  actions: { kind: string; label: string; desc: string; silver: number; done: boolean }[];
+  actions: { kind: string; label: string; desc: string; energy: number; silver: number; block?: string; odds?: string; done: boolean }[];
+}
+
+export interface OfficialView {
+  id: CharId;
+  post: string;
+  name: string;
+  look: number;
+  kind: CharKind;
+  rank: number;
+  region: RegionId;
+  faction: FactionId | null;
+  stance: string;
+  temper: string;
+  traits: string[];
+  abil: Abilities;
+  abilSource: string;
+  certified: boolean;
+  demeanor: string;
+  authority: Authority;
+  delegable: boolean;
+  age: number;
+  fame: number;
+  intel?: { integrity: string; loyalty: string; faction: string };
+  trust?: Trust;
+  term: number;
+}
+
+export interface ConsortView {
+  id: string;
+  name: string;
+  rank: number;
+  rankName: string;
+  family: FactionId | null;
+  temper: string;
+  affection: string;
+  grace: number;
+  pregnant: boolean;
+  status: string;
+  look: number;
 }
 
 export interface PlayerView {
   seed: string;
+  difficulty: Difficulty;
+  fatigue: { band: number; text: string };
+  regen: number;
+  speechBand: number;
+  dowager: string;
+  guard: string;
+  dongchang: 'eunuch' | 'crown';
+  capital: RegionId;
+  relocating?: { kind: string; until: number };
+  factions: { id: FactionId; name: string; color: string; clout: number; grievance: number }[];
+  dominant: FactionId | null;
+  balanced: boolean;
+  statuses: { id: string; name: string; left: number; desc: string; good: boolean }[];
+  armies: ArmyView[];
+  powers: PowerView[];
+  officials: OfficialView[];
+  consorts: ConsortView[];
+  children: { id: string; name: string; son: boolean; mother: string; born: number; alive: boolean; heir: boolean }[];
+  battles: BattleRecord[];
+  navy: number;
+  zhongxing: { label: string; ok: boolean | null }[];
+  leisureUsed: boolean;
+  orderLog: { id: number; label: string; issued: number; arrive: number; done: number; applied: boolean }[];
   turn: number;
   maxTurn: number;
   perk: PerkId;
@@ -177,7 +285,6 @@ export interface PlayerView {
   finance: FinanceView;
   palace: PalaceView;
   agenda: AgendaItem[];
-  foreign: ForeignView[];
   over: GameState['over'];
 }
 
@@ -226,26 +333,49 @@ export function playerView(state: GameState): PlayerView {
         claims: d.read ? d.claims.map((c) => ({ ...c })) : null,
         request: d.request ? { ...d.request } : undefined,
         decision: d.decision,
-        task: d.task ? { choices: d.task.choices, chosen: d.task.chosen, deadline: d.task.deadline, fallback: d.task.fallback, recommend: d.task.recommend } : undefined,
+        task: d.task
+          ? {
+              choices: d.task.choices,
+              chosen: d.task.chosen,
+              deadline: d.task.deadline,
+              fallback: d.task.fallback,
+              recommend: d.task.recommend,
+              delegate: d.task.delegate
+                ? { by: `${state.chars[d.task.delegate.by]?.title ?? ''}${state.chars[d.task.delegate.by]?.name ?? ''}`, byLook: state.chars[d.task.delegate.by]?.look, choice: d.task.delegate.choice, label: d.task.choices.find((c) => c.id === d.task!.delegate!.choice)?.label ?? '', why: d.task.delegate.why }
+                : undefined,
+            }
+          : undefined,
         highlight: d.highlight,
         read: d.read,
         free: !!d.free,
         urgent: !!d.urgent,
         isNew: d.arriveTurn === state.turn,
+        importance: d.importance ?? (d.urgent ? 3 : d.request ? 2 : 1),
+        certified: !!d.certified,
+        battleId: d.battleId,
+        lot: d.lot,
+        delegatedBy: d.delegatedBy ? `${state.chars[d.delegatedBy]?.title ?? ''}${state.chars[d.delegatedBy]?.name ?? ''}` : undefined,
       };
     })
     .sort((a, b) => b.arriveTurn - a.arriveTurn || Number(b.urgent) - Number(a.urgent) || b.id - a.id);
 
   const regions = {} as Record<RegionId, RegionView>;
-  for (const id of REGION_ORDER) {
+  for (const id of ALL_REGIONS) {
+    const reg = w.regions[id];
+    const owner = REGIONS[id].kind === 'outer' ? reg.owner : 'crown';
+    const pd = POWERS.find((p) => p.id === owner);
     regions[id] = {
       id,
       lastNews: null,
       facts: [],
       note: state.notes[id] ?? '',
-      gov: charView(state, `gov:${id}`, docCount[`gov:${id}`] ?? 0),
+      gov: charView(state, state.chars[`gov:${id}`] ? `gov:${id}` : 'shoufu', docCount[`gov:${id}`] ?? 0),
       inTransit: state.orders.filter((o) => o.region === id && o.status === 'transit' && state.turn < o.arriveTurn).length,
       urgent: false,
+      owner,
+      ownerName: owner === 'crown' ? '本朝' : pd?.name ?? owner,
+      ownerColor: owner === 'crown' ? '#c9b48a' : pd?.color ?? '#888',
+      control: Math.round(reg.control),
     };
   }
   for (const d of arrived) {
@@ -258,7 +388,16 @@ export function playerView(state: GameState): PlayerView {
       regions[target].facts.push({ ...c, source: d.fromLabel, sentTurn: d.sentTurn, docId: d.id });
     }
   }
-  for (const id of REGION_ORDER) regions[id].facts.sort((a, b) => b.sentTurn - a.sentTurn || b.docId - a.docId);
+  for (const id of ALL_REGIONS) regions[id].facts.sort((a, b) => b.sentTurn - a.sentTurn || b.docId - a.docId);
+  // 據報兵數：兵部冊報、點驗、東廠（不必細讀）
+  for (const d of [...arrived].sort((a, b) => a.sentTurn - b.sentTurn)) {
+    for (const c of d.claims) {
+      const [head, tail] = c.key.split('.');
+      if (head !== 'troops' || typeof c.value !== 'number') continue;
+      const rv = regions[tail as RegionId];
+      if (rv && (!rv.troops || !rv.troops.certified || d.certified)) rv.troops = { value: c.value, source: d.fromLabel, turn: d.sentTurn, certified: !!d.certified };
+    }
+  }
   // 陷落與敵情：飛報不必細讀也知道
   for (const d of [...arrived].sort((a, b) => a.sentTurn - b.sentTurn)) {
     for (const c of d.claims) {
@@ -267,6 +406,7 @@ export function playerView(state: GameState): PlayerView {
       if (!rv) continue;
       if (head === 'held') rv.held = c.value === '已收復' ? undefined : String(c.value);
       if (head === 'foe' && typeof c.value === 'number' && state.turn - d.sentTurn <= 5) rv.foe = c.value > 0 ? { size: c.value, turn: d.sentTurn, source: d.fromLabel } : undefined;
+      if (head === 'held' && c.value === '已收復') rv.foe = undefined;
     }
   }
 
@@ -287,11 +427,39 @@ export function playerView(state: GameState): PlayerView {
     return { uid: c.uid, title: caseTitle(c), region: c.region, question: def.question, options: def.branches.map((b) => ({ value: b.id, label: b.label })), firstSeen: first };
   });
 
-  const field = w.detachments.filter((d) => !d.returned).reduce((n, d) => n + d.troops, 0);
+  const field = crownArmies(state).filter((a) => a.fromCapital).reduce((n, a) => n + a.size, 0);
   const p = w.prestige;
+  const cl = clout(state);
+  const battleIds = new Set(arrived.filter((d) => d.battleId).map((d) => d.battleId));
 
   return {
     seed: state.seed,
+    difficulty: state.difficulty,
+    fatigue: { band: fatigueBand(w.emperor.fatigue), text: FATIGUE_TEXT[fatigueBand(w.emperor.fatigue)] },
+    regen: energyCap(state).regen,
+    speechBand: w.speech >= 70 ? 4 : w.speech >= 50 ? 3 : w.speech >= 30 ? 2 : w.speech >= 15 ? 1 : 0,
+    dowager: DOWAGER_TEXT(w.dowager),
+    guard: GUARD_TEXT[guardLevel(state)],
+    dongchang: w.dongchang,
+    capital: w.capital,
+    relocating: w.relocating,
+    factions: FACTIONS.map((f) => ({ id: f, name: FACTION_NAME[f], color: FACTION_COLOR[f], clout: cl[f], grievance: Math.round(w.factions[f].grievance) })),
+    dominant: dominant(state),
+    balanced: balanced(state),
+    statuses: w.statuses.filter((x) => x.until > state.turn).map((x) => ({ id: x.id, name: x.name, left: x.until - state.turn, desc: x.desc, good: STATUS_DEFS[x.id]?.good ?? true })),
+    armies: armyViews(state),
+    powers: powerViews(state, arrived),
+    officials: officialViews(state),
+    consorts: state.consorts.map((c) => ({ id: c.id, name: state.chars[c.id]?.name ?? '', rank: c.rank, rankName: RANKS[c.rank], family: c.family, temper: CONSORT_TEMPER[c.temper], affection: affectionText(c.affection), grace: Math.round(c.grace), pregnant: !!c.pregnantUntil && arrived.some((d) => d.title.includes('宮中有喜')), status: c.status, look: state.chars[c.id]?.look ?? 0 })),
+    children: state.children.map((c) => ({ ...c, mother: state.chars[c.mother]?.name ?? '', heir: state.heir === c.id })),
+    battles: state.battles.filter((b) => battleIds.has(b.id)).map((b) => ({ ...b, truth: undefined }) as BattleRecord),
+    navy: w.navy,
+    zhongxing: zhongxing(state).map((z, i) => ({ label: z.label, ok: [2, 3, 7].includes(i) ? null : i === 5 ? state.reportedTreasury >= 120 : z.ok })),
+    leisureUsed: w.emperor.leisureTurn === state.turn,
+    orderLog: state.orders
+      .filter((o) => o.edict)
+      .map((o) => ({ id: o.id, label: o.label, issued: o.issuedTurn, arrive: o.arriveTurn, done: o.doneTurn ?? o.arriveTurn, applied: !!o.applied }))
+      .sort((a, b) => b.issued - a.issued || b.id - a.id),
     turn: state.turn,
     maxTurn: state.maxTurn,
     perk: state.perk,
@@ -315,12 +483,112 @@ export function playerView(state: GameState): PlayerView {
     finance: financeView(state, regions),
     palace: palaceView(state),
     agenda: agendaView(state),
-    foreign: foreignView(state, arrived),
     over: state.over,
   };
 }
 
-export const PRESTIGE_TEXT = ['民怨沸騰', '物議洶洶', '尚屬平和', '頗孚眾望', '聖德遠播'];
+export const PRESTIGE_TEXT = ['民怨沸騰', '物議洶洶', '人心浮動', '頗孚眾望', '聖德遠播'];
+export const SPEECH_TEXT = ['言路閉塞', '言路壅塞', '言路尚通', '言路暢通', '言路大開'];
+
+function armyViews(state: GameState): ArmyView[] {
+  const w = state.world;
+  return crownArmies(state).map((a) => {
+    const c = a.commander ? state.chars[a.commander] : null;
+    const honest = w.emperor.campaignArmy === a.id || !!w.cooldown[`mon:${a.id}`] || (a.roll ?? a.size) <= a.size * 1.02;
+    return {
+      id: a.id,
+      label: a.label,
+      region: a.region,
+      unit: UNITS[a.unit]?.name ?? a.unit,
+      reported: Math.round(a.roll ?? a.size),
+      real: honest ? Math.round(a.size) : undefined,
+      commander: c ? { id: c.id, name: c.name, look: c.look, kind: c.kind, stance: STANCE_TEXT[c.stance], authority: c.authority } : undefined,
+      morale: MORALE_TEXT[moraleBand(a.morale)],
+      moraleBand: moraleBand(a.morale),
+      mission: a.mission === 'suppress' ? '進剿' : a.mission === 'march' ? (a.dest === w.capital ? '班師' : '行軍') : a.path.length ? '行軍' : '駐守',
+      path: a.path.slice(),
+      eta: a.path.length ? a.nextMove : undefined,
+      stratagem: a.stratagem ? CARDS[a.stratagem.card]?.name : undefined,
+      posture: a.posture === 'attack' ? '催戰' : a.posture === 'hold' ? '禁戰' : undefined,
+      campaign: w.emperor.campaignArmy === a.id,
+      fromCapital: !!a.fromCapital,
+    };
+  });
+}
+
+function powerViews(state: GameState, arrived: GameState['docs']): PowerView[] {
+  const w = state.world;
+  return POWERS.map((p) => {
+    let stance: PowerView['stance'];
+    let strength: PowerView['strength'];
+    let raids = 0;
+    for (const d of arrived) {
+      if (d.topic !== `foreign:${p.id}`) continue;
+      if (d.urgent && (d.title.includes('犯邊') || d.title.includes('入寇'))) raids += 1;
+      for (const c of d.claims) {
+        if (c.key === `stance.${p.id}` && (!stance || d.sentTurn >= stance.turn)) stance = { value: String(c.value), source: d.fromLabel, turn: d.sentTurn };
+        if (c.key === `power.${p.id}` && typeof c.value === 'number' && (!strength || d.sentTurn >= strength.turn)) strength = { value: c.value, source: d.fromLabel, turn: d.sentTurn };
+      }
+    }
+    const ps = w.powers[p.id];
+    return {
+      id: p.id,
+      name: p.name,
+      kind: { enemy: '鄰敵', tributary: '藩屬', sea: '海上', minor: '小部' }[p.kind],
+      color: p.color,
+      desc: p.desc,
+      standing: STANDING_TEXT[ps.standing],
+      alive: alive(state, p.id),
+      regions: ALL_REGIONS.filter((r) => w.regions[r].owner === p.id),
+      home: p.home,
+      stance,
+      strength,
+      trade: ps.trade,
+      tributePay: ps.tributePay,
+      allyPay: ps.allyPay,
+      raids,
+      look: hashSeed(state.seed + p.id),
+      actions: foreignActions(state, p.id).map((a) => ({ kind: a.kind, label: a.label, desc: a.desc, energy: a.energy, silver: a.silver, block: a.block, odds: a.odds !== undefined ? oddsText(a.odds) : undefined, done: state.orders.some((o) => o.edict === `dip:${a.kind}` && o.target === p.id && o.issuedTurn === state.turn) })),
+    };
+  });
+}
+
+const LOYAL_TEXT = (v: number) => (v >= 70 ? '忠心耿耿' : v >= 45 ? '尚屬安分' : v >= 25 ? '心懷怨望' : '包藏禍心');
+
+function officialViews(state: GameState): OfficialView[] {
+  return allPosts(state).map((id) => {
+    const c = state.chars[id];
+    const p = postOf(state, id)!;
+    const ar = abilReport(state, id);
+    const it = state.intel[id];
+    return {
+      id,
+      post: p.name,
+      name: c.name,
+      look: c.look,
+      kind: c.kind,
+      rank: c.rank,
+      region: c.region,
+      faction: c.faction,
+      stance: STANCE_TEXT[c.stance],
+      temper: TEMPER_TEXT[c.temper],
+      traits: c.traits.slice(),
+      abil: ar.abil,
+      abilSource: ar.source,
+      certified: ar.certified,
+      demeanor: demeanor(c),
+      authority: c.authority,
+      delegable: p.delegable,
+      age: Math.round(c.age),
+      fame: c.fame,
+      intel: it ? { integrity: (it.integrity ?? 0.5) >= 0.7 ? '廉潔' : (it.integrity ?? 0.5) >= 0.45 ? '平常' : '貪墨', loyalty: LOYAL_TEXT(it.loyalty ?? 50), faction: it.faction ? FACTION_NAME[it.faction] : '無黨' } : undefined,
+      trust: state.trust[id],
+      term: c.term,
+    };
+  });
+}
+
+export { abilText, AUTH_TEXT };
 export { REGIONS };
 
 function financeView(state: GameState, regions: Record<RegionId, RegionView>): FinanceView {
@@ -372,7 +640,7 @@ function palaceView(state: GameState): PalaceView {
         locked: !!p.needWest && !w.westerner,
       };
     }),
-    leisure: LEISURE.map((l) => ({ id: l.id, name: l.name, energy: l.energy, silver: l.silver ?? 0, privy: l.privy ?? 0, desc: l.desc, hint: leisureHint(state, l) })),
+    leisure: LEISURE.map((l) => ({ id: l.id, name: l.name, energy: l.energy, silver: l.silver ?? 0, privy: l.privy ?? 0, desc: l.desc, hint: leisureHint(state, l), block: leisureBlock(state, l.id) })),
   };
 }
 
@@ -420,26 +688,27 @@ function agendaView(state: GameState): AgendaItem[] {
       }
     }
   }
-  for (const d of w.detachments) {
-    if (d.returned) continue;
-    if (t < d.arriveTurn) out.push({ turn: d.arriveTurn, kind: 'army', text: `京營${Math.round(d.troops / 1000)}千人抵${regionName(d.region)}` });
-    out.push({ turn: d.homeTurn, kind: 'army', text: `出征${regionName(d.region)}的京營班師回京` });
+  for (const a of crownArmies(state)) {
+    if (a.path.length && a.dest) out.push({ turn: a.nextMove + Math.max(0, a.path.length - 1), kind: 'army', text: `${a.label}抵${regionName(a.dest)}`, approx: a.path.length > 1 });
   }
+  for (const o of state.orders) {
+    if (!o.edict || o.applied) continue;
+    out.push({ turn: o.doneTurn ?? o.arriveTurn, kind: 'order', text: `詔書「${o.label}」${(o.doneTurn ?? 0) > o.arriveTurn ? '執行完畢' : '送達生效'}` });
+  }
+  for (const c of state.consorts) if (c.pregnantUntil && arrived.some((d) => d.title.includes('宮中有喜'))) out.push({ turn: c.pregnantUntil, kind: 'palace', text: `${state.chars[c.id]?.name ?? ''}預計誕育`, approx: true });
   for (const p of w.projects) if (!p.complete) out.push({ turn: p.done, kind: 'project', text: `${PROJECTS.find((x) => x.id === p.id)?.name}預計告成` });
   for (const d of arrived) {
     if (d.task && !d.task.chosen && d.task.deadline >= t) out.push({ turn: d.task.deadline, kind: 'deadline', text: `〈${d.title}〉裁決期限（逾期依例）`, docId: d.id });
   }
   if (w.emperor.restUntil > t) out.push({ turn: w.emperor.restUntil, kind: 'palace', text: '罷朝靜養期滿' });
-  if (w.emperor.heirDue > t && arrived.some((d) => d.title.includes('宮中有喜'))) out.push({ turn: w.emperor.heirDue, kind: 'palace', text: '后妃預計誕育', approx: true });
 
   // 例行的朝廷行事曆
   for (let k = t + 1; k <= Math.min(t + CAL_HORIZON, state.maxTurn - 1); k++) {
     const m = k % 36;
     if (k % 6 === 2) out.push({ turn: k, kind: 'calendar', text: '戶部請發四邊兩月餉銀' });
     if (k % 12 === 0) out.push({ turn: k, kind: 'calendar', text: '戶部請定本期稅則' });
-    if (k === 18 || k === 54) out.push({ turn: k, kind: 'calendar', text: '吏部京察大計' });
-    if (k === 6 || k === 30 || k === 54) out.push({ turn: k, kind: 'calendar', text: '兵部請整頓京營' });
-    if (k === 33 || k === 69) out.push({ turn: k, kind: 'calendar', text: '冬至郊祀' });
+    if (m === 18) out.push({ turn: k, kind: 'calendar', text: '吏部京察大計' });
+    if (m === 33) out.push({ turn: k, kind: 'calendar', text: '冬至郊祀' });
     if (m === 1) out.push({ turn: k, kind: 'calendar', text: '上元燈節' });
     if (m === 14) out.push({ turn: k, kind: 'calendar', text: '端陽節' });
     if (m === 23) out.push({ turn: k, kind: 'calendar', text: '中秋節' });
@@ -447,36 +716,4 @@ function agendaView(state: GameState): AgendaItem[] {
     if (isFloodSeason(k) && !isFloodSeason(k - 1)) out.push({ turn: k, kind: 'calendar', text: '伏秋大汛開始（黃河沿岸須防決堤）' });
   }
   return out.filter((x) => x.turn >= t).sort((a, b) => a.turn - b.turn || a.kind.localeCompare(b.kind));
-}
-
-function foreignView(state: GameState, arrived: GameState['docs']): ForeignView[] {
-  const w = state.world;
-  return POWERS.map((p) => {
-    let stance: ForeignView['stance'];
-    let strength: ForeignView['strength'];
-    let lastTribute: number | undefined;
-    let raids = 0;
-    for (const d of arrived) {
-      if (d.topic !== `foreign:${p.id}`) continue;
-      if (d.title.includes('朝貢')) lastTribute = Math.max(lastTribute ?? -99, d.sentTurn);
-      if (d.urgent && (d.title.includes('犯邊') || d.title.includes('入寇'))) raids += 1;
-      for (const c of d.claims) {
-        if (c.key === `stance.${p.id}` && (!stance || d.sentTurn >= stance.turn)) stance = { value: String(c.value), source: d.fromLabel, turn: d.sentTurn };
-        if (c.key === `power.${p.id}` && typeof c.value === 'number' && (!strength || d.sentTurn >= strength.turn)) strength = { value: c.value, source: d.fromLabel, turn: d.sentTurn };
-      }
-    }
-    return {
-      id: p.id,
-      name: p.name,
-      kind: p.kind,
-      borders: p.borders,
-      stance,
-      strength,
-      lastTribute,
-      raids,
-      trade: w.powers[p.id].trade,
-      look: hashSeed(state.seed + p.id),
-      actions: foreignActions(state, p.id).map((a) => ({ ...a, done: w.cooldown[`act:${p.id}:${a.kind}`] === state.turn })),
-    };
-  });
 }

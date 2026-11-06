@@ -3,6 +3,7 @@
 import { useState } from 'preact/hooks';
 import { shortDate } from '../core/calendar';
 import { hashSeed } from '../core/rng';
+import { issueEdict } from '../core/edicts';
 import { doLeisure, startProject } from '../core/palace';
 import type { PlayerView } from '../core/view';
 import type { Act } from './App';
@@ -30,6 +31,7 @@ type Tab = 'life' | 'build';
 
 export function PalaceModal({ view, act, onClose, initial = 'life' }: { view: PlayerView; act: Act; onClose: () => void; initial?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial);
+  const [fei, setFei] = useState(view.consorts.find((c) => c.status === 'active' && c.rank === 6)?.id ?? view.consorts[0]?.id ?? '');
   const pv = view.palace;
   const building = pv.projects.find((p) => p.status === 'building');
 
@@ -46,7 +48,9 @@ export function PalaceModal({ view, act, onClose, initial = 'life' }: { view: Pl
               京師營建
             </button>
           </nav>
-          <span class="muted small">本旬精力尚餘 {view.energy}／{view.energyMax}</span>
+          <span class="muted small">
+            精力 {view.energy}／{view.energyMax}（可透支到 −3）・勞損：{view.fatigue.text}・下旬回復 {view.regen}
+          </span>
           <button class="btn ghost" onClick={onClose}>
             退出
           </button>
@@ -70,7 +74,14 @@ export function PalaceModal({ view, act, onClose, initial = 'life' }: { view: Pl
                   聖躬：{pv.ill ? <span class="ink">{pv.ill.kind}・{pv.ill.text}</span> : <span class="ok">安和</span>}
                 </h3>
                 {pv.ill && <p class="small">病中精力減少、心情變差。可在太醫院的奏報中選擇療法，或禮佛問道、靜養。</p>}
-                <h4>本旬精力的增減</h4>
+                <h3>
+                  勞損：<span class={`fat f${view.fatigue.band}`}>{view.fatigue.text}</span>
+                </h3>
+                <p class="small">精力每旬只回復約四點，不會回滿。透支（低於 0）會累積勞損，一旬花掉七點以上也會；勞損越重越容易生病。休養（一旬只花一點以下）多回兩點；「罷朝靜養」一旬可大減勞損。</p>
+                <button class="btn small" onClick={() => act((s) => issueEdict(s, 'rest'))} data-testid="rest">
+                  罷朝靜養本旬
+                </button>
+                <h4>下旬精力的回復</h4>
                 {pv.capReasons.length ? (
                   <ul class="small">
                     {pv.capReasons.map((r) => (
@@ -80,15 +91,26 @@ export function PalaceModal({ view, act, onClose, initial = 'life' }: { view: Pl
                 ) : (
                   <p class="small muted">無增減。</p>
                 )}
-                <p class="muted small">
-                  心情會隨朝望起伏；一旬細讀太多（四份以上）會操勞；大捷、祥瑞、朝貢、皇子誕生令人開心，兵敗、決堤、民變、言官批評令人不快。{pv.heirs ? `已有子女 ${pv.heirs} 人。` : ''}
-                </p>
+                <p class="muted small">心情隨朝望起伏；勞損重時心情變差。大捷、祥瑞、朝貢、皇子誕生令人開心；兵敗、決堤、民變、言官批評令人不快。</p>
               </section>
               <section>
-                <h4>消遣（耗精力，可解憂）</h4>
+                <h4>消遣（每旬一種；同一種冷卻三旬，常玩效果遞減）{view.leisureUsed && <em class="warn">　本旬已消遣</em>}</h4>
+                <div class="fei-pick">
+                  臨幸：
+                  <select value={fei} onChange={(e) => setFei((e.target as HTMLSelectElement).value)}>
+                    {view.consorts
+                      .filter((c) => c.status === 'active')
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                          {c.rankName}（{c.affection}）
+                        </option>
+                      ))}
+                  </select>
+                </div>
                 <div class="leisure">
                   {pv.leisure.map((l) => (
-                    <button key={l.id} class="leisure-card" disabled={view.energy < l.energy} onClick={() => act((s) => doLeisure(s, l.id))} data-leisure={l.id}>
+                    <button key={l.id} class="leisure-card" disabled={!!l.block || view.energy - l.energy < -3} title={l.block ?? ''} onClick={() => act((s) => doLeisure(s, l.id, fei))} data-leisure={l.id}>
                       <b>{l.name}</b>
                       <span class="cost">
                         精力{l.energy}
@@ -96,7 +118,7 @@ export function PalaceModal({ view, act, onClose, initial = 'life' }: { view: Pl
                         {l.privy ? `・內帑${l.privy}萬` : ''}
                       </span>
                       <span class="note">{l.desc}</span>
-                      <em>{l.hint}</em>
+                      <em>{l.block ?? l.hint}</em>
                     </button>
                   ))}
                 </div>
@@ -125,11 +147,11 @@ export function PalaceModal({ view, act, onClose, initial = 'life' }: { view: Pl
                     {p.status === 'building' && <em>興建中，預計{shortDate(p.doneTurn!)}告成</em>}
                     {p.status === 'idle' && !p.locked && (
                       <span class="project-actions">
-                        <button class="btn vermilion" disabled={!!building || view.energy < 1} onClick={() => act((s) => startProject(s, p.id))} data-start={p.id}>
+                        <button class="btn vermilion" disabled={!!building || view.energy < -2} onClick={() => act((s) => startProject(s, p.id))} data-start={p.id}>
                           興工（國庫）
                         </button>
                         {p.privy && (
-                          <button class="btn ghost" disabled={!!building || view.energy < 1} onClick={() => act((s) => startProject(s, p.id, true))}>
+                          <button class="btn ghost" disabled={!!building || view.energy < -2} onClick={() => act((s) => startProject(s, p.id, true))}>
                             動用內帑
                           </button>
                         )}

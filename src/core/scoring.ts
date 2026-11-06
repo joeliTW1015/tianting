@@ -4,7 +4,9 @@ import { caseTitle, CASE_DEFS } from './cases';
 import { discoveredCases } from './actions';
 import { PROJECTS } from './palace';
 import { powerDef } from './foreign';
-import type { EndReason, GameState, TruthEvent } from './types';
+import { ALL_REGIONS, PROVINCES } from './geography';
+import { allPosts, FACTION_NAME, postOf } from './people';
+import type { EndReason, EndingKind, GameState, TruthEvent } from './types';
 
 export interface Verdict {
   key: string;
@@ -33,6 +35,11 @@ export interface LieGroup {
 
 export interface Chronicle {
   reason: EndReason;
+  ending: EndingKind;
+  endingName: string;
+  breakdown: { label: string; points: number }[];
+  officials: { post: string; name: string; truth: string; belief: string; match: boolean | null }[];
+  owned: number;
   turn: number;
   score: number;
   posthumous: string;
@@ -47,13 +54,29 @@ export interface Chronicle {
 }
 
 const REASON_TEXT: Record<EndReason, string> = {
-  survived: '國祚延續',
+  zhongxing: '中興',
+  survived: '守成',
+  southern: '偏安江南',
   capital: '京師陷落',
   mutiny: '京營譁變',
   famine: '京師大饑',
+  captured: '天子蒙塵',
   coup: '群臣廢立',
+  palace: '宮變被廢',
   illness: '病篤駕崩',
+  assassinated: '遇刺駕崩',
 };
+
+export const ENDING_NAME: Record<EndingKind, string> = { zhongxing: '中興', shoucheng: '守成', pianan: '偏安', wangguo: '亡國', jiabeng: '駕崩', beifei: '被廢' };
+
+export function endingKind(r: EndReason): EndingKind {
+  if (r === 'zhongxing') return 'zhongxing';
+  if (r === 'survived') return 'shoucheng';
+  if (r === 'southern') return 'pianan';
+  if (r === 'illness' || r === 'assassinated') return 'jiabeng';
+  if (r === 'coup' || r === 'palace') return 'beifei';
+  return 'wangguo';
+}
 
 export function reasonText(r: EndReason): string {
   return REASON_TEXT[r];
@@ -107,12 +130,31 @@ export function chronicle(state: GameState): Chronicle {
   const started = verdicts.filter((v) => v.started);
   const caseSum = started.reduce((n, v) => n + v.points, 0);
   const correct = verdicts.filter((v) => v.correct).length + (shoufuVerdict.correct ? 1 : 0);
-  // 疑案處置折算為 60 分（只計已發生者）
-  let score = (caseSum / Math.max(1, started.length * 20)) * 60 + correct * 2 + w.prestige / 10;
-  if (over.reason === 'survived') score += 15;
-  score -= w.wrongful.length * 5;
-  if (w.treasury > 0) score += 3;
-  score = Math.max(0, Math.min(100, Math.round(score)));
+  const ending = endingKind(over.reason);
+  const owned = ALL_REGIONS.filter((r) => (w.regions[r].owner === 'crown' || !w.regions[r].owner) && !w.regions[r].heldBy).length;
+  const avgUnrest = PROVINCES.reduce((n, p) => n + w.regions[p].unrest, 0) / PROVINCES.length;
+  const officials = allPosts(state).map((id) => {
+    const c = state.chars[id];
+    const loyal = c.loyalty >= 60 ? 'trust' : c.loyalty >= 35 ? 'doubt' : 'distrust';
+    const b = state.trust[id];
+    return {
+      post: postOf(state, id)?.name ?? c.title,
+      name: c.name,
+      truth: `統兵${c.abil.mil}・治政${c.abil.gov}・理財${c.abil.fin}・謀略${c.abil.wit}；操守${c.integrity >= 0.7 ? '廉' : c.integrity >= 0.45 ? '中' : '貪'}；忠誠${Math.round(c.loyalty)}；野心${Math.round(c.ambition)}${c.secretFaction ? `；暗附${FACTION_NAME[c.secretFaction]}` : ''}`,
+      belief: b === 'trust' ? '可信' : b === 'doubt' ? '存疑' : b === 'distrust' ? '不可信' : '—',
+      match: b ? b === loyal : null,
+    };
+  });
+  const judged = officials.filter((o) => o.match !== null);
+  const breakdown = [
+    { label: `結局（${ENDING_NAME[ending]}）`, points: { zhongxing: 30, shoucheng: 20, pianan: 12, jiabeng: 8, beifei: 4, wangguo: 0 }[ending] },
+    { label: '事件鏈處置', points: Math.round((caseSum / Math.max(1, started.length * 20)) * 30) },
+    { label: '疆域', points: Math.max(0, Math.min(10, 5 + (owned - state.startOwned) * 2)) },
+    { label: '國力', points: Math.round((w.treasury >= 200 ? 4 : w.treasury >= 80 ? 2 : 0) + (w.grain >= 100 ? 2 : 0) + (w.prestige / 100) * 5 + (avgUnrest < 45 ? 2 : 0) + (w.corruption < 50 ? 2 : 0)) },
+    { label: '判讀', points: Math.round(((correct + judged.filter((o) => o.match).length) / Math.max(1, verdicts.length + 1 + judged.length)) * 10) },
+    { label: `冤獄 ${w.wrongful.length} 件`, points: -w.wrongful.length * 3 },
+  ];
+  const score = Math.max(0, Math.min(100, breakdown.reduce((n, b) => n + b.points, 0)));
   const [posthumous, meaning] = title(over.reason, score);
 
   const topicTitle = (t: string) => {
@@ -147,8 +189,15 @@ export function chronicle(state: GameState): Chronicle {
 
   const omittedClues = [...delivered.values()].reduce((n, d) => n + d.paras.filter((p) => p.tag === 'clue' && p.brief && !p.inSummary).length, 0);
 
+  const eu = state.cases.find((c) => c.def === 'eunuch');
+  const un = state.cases.find((c) => c.def === 'uncle');
   return {
     reason: over.reason,
+    ending,
+    endingName: ENDING_NAME[ending],
+    breakdown,
+    officials,
+    owned,
     turn: over.turn,
     score,
     posthumous,
@@ -159,7 +208,10 @@ export function chronicle(state: GameState): Chronicle {
     events: w.events.map((e) => ({ ...e, topicTitle: topicTitle(e.topic) })),
     roles: [
       { name: '首輔', truth: shoufuVerdict.truth },
-      { name: '東廠提督', truth: w.dongchang === 'capable' ? '精幹，密報大致可信。' : '好大喜功，約三成密報夾帶羅織之詞。' },
+      { name: '東廠', truth: w.dongchang === 'crown' ? '局終時東廠在天子手中，密報確實。' : '局終時東廠仍在權閹手中：閹黨之事一律說好話，約三成密報夾帶羅織。' },
+      { name: '九千歲', truth: eu ? CASE_DEFS.eunuch.truth(state, eu) : '' },
+      { name: '皇叔瑞王', truth: un ? CASE_DEFS.uncle.truth(state, un) : '' },
+      { name: '皇太后', truth: `局終時太后好感${Math.round(w.dowager)}／100。` },
     ],
     wrongful: [...w.wrongful],
     stats: {
@@ -178,15 +230,14 @@ export function chronicle(state: GameState): Chronicle {
 }
 
 function title(reason: EndReason, score: number): [string, string] {
-  if (reason === 'capital') return ['思', '道德純一曰思。城破之日，帝自縊於煤山。'];
-  if (reason === 'mutiny') return ['厲', '殺戮無辜曰厲。府庫空竭，禁軍譁變。'];
-  if (reason === 'famine') return ['愍', '在國遭憂曰愍。太倉無粟，京師大饑。'];
-  if (reason === 'coup') return ['殤', '短折不成曰殤。朝望掃地，為群臣所廢。'];
-  if (reason === 'illness') return ['悼', '年中早夭曰悼。病篤不起，崩於乾清宮。'];
-  if (score >= 85) return ['明', '照臨四方曰明。洞燭幽微，群下不敢欺。'];
-  if (score >= 72) return ['睿', '深思遠慮曰睿。雖有蔽塞，終能察之。'];
-  if (score >= 58) return ['穆', '布德執義曰穆。守成之君，功過參半。'];
-  if (score >= 44) return ['熹', '有過能改曰熹。屢為所欺，國勢日蹙。'];
-  if (score >= 30) return ['靈', '亂而不損曰靈。天聽多蔽，朝政日非。'];
-  return ['哀', '恭仁短折曰哀。天聽壅蔽，國事日非。'];
+  const k = endingKind(reason);
+  if (k === 'wangguo') return reason === 'capital' ? ['烈', '秉德遵業曰烈。城破之日，帝自縊於煤山，史稱末帝。'] : reason === 'captured' ? ['愍', '在國遭憂曰愍。王師敗績，天子北狩。'] : reason === 'mutiny' ? ['厲', '殺戮無辜曰厲。府庫空竭，禁軍譁變。'] : ['愍', '在國遭憂曰愍。太倉無粟，京師大饑。'];
+  if (k === 'beifei') return ['廢帝', reason === 'palace' ? '權閹矯詔，迎立皇叔；帝幽於南宮，不得廟號。' : '朝望掃地，群臣伏闕，太后下懿旨廢立。'];
+  if (k === 'jiabeng') return reason === 'assassinated' ? ['悼', '年中早夭曰悼。宮闈之變，帝崩於非命。'] : ['悼', '年中早夭曰悼。積勞成疾，崩於乾清宮。'];
+  if (k === 'pianan') return score >= 50 ? ['安', '好和不爭曰安。南渡偏安，保江左半壁。'] : score >= 30 ? ['哀', '恭仁短折曰哀。倉皇南渡，北土淪胥。'] : ['殤', '短折不成曰殤。播遷江南，國勢日蹙。'];
+  if (k === 'zhongxing') return score >= 85 ? ['宣', '聖善周聞曰宣。剷除奸佞，戡定禍亂，海內稱中興。'] : score >= 70 ? ['武', '克定禍亂曰武。內外肅清，國勢復振。'] : ['昭', '容儀恭美曰昭。勵精圖治，國步稍蘇。'];
+  if (score >= 70) return ['孝', '慈惠愛親曰孝。守成之君，保有天下。'];
+  if (score >= 50) return ['莊', '履正志和曰莊。雖無大功，亦無大過。'];
+  if (score >= 30) return ['懷', '慈仁短折曰懷。天聽多蔽，朝政日非。'];
+  return ['靈', '亂而不損曰靈。天聽壅蔽，國事日非。'];
 }

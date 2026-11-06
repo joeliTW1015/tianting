@@ -24,6 +24,10 @@ export interface DocDraft {
   free?: boolean;
   urgent?: boolean;
   highlight?: string;
+  importance?: number;
+  certified?: boolean;
+  battleId?: number;
+  lot?: Doc['lot'];
 }
 
 export function draft(kind: DocKind, from: DocDraft['from'], region: RegionId, topic: Topic, title: string): DocDraft {
@@ -93,6 +97,13 @@ export function registerBlocker(f: Blocker): void {
   blockers.push(f);
 }
 
+/** 文書入匣後的處理（例如大臣依授權自行處分） */
+type PostHook = (state: GameState, doc: Doc) => void;
+const postHooks: PostHook[] = [];
+export function registerPostHook(f: PostHook): void {
+  postHooks.push(f);
+}
+
 /** 送出文書。回傳 null 表示在途遺失或遭截留。 */
 export function post(state: GameState, d: DocDraft, lost = false): Doc | null {
   const r = state.rng;
@@ -119,9 +130,14 @@ export function post(state: GameState, d: DocDraft, lost = false): Doc | null {
     free: d.free,
     urgent: d.urgent,
     highlight: d.highlight,
+    importance: d.importance,
+    certified: d.certified,
+    battleId: d.battleId,
+    lot: d.lot,
   };
   if (lost || blockers.some((f) => f(state, doc))) return null;
-  if (interceptors.some((f) => f(state, doc))) {
+  const mijie = typeof doc.from === 'string' && state.world.cooldown[`mijie:${doc.from}`];
+  if (!mijie && interceptors.some((f) => f(state, doc))) {
     state.world.mods.suppressed += 1;
     state.world.events.push({ turn: state.turn, topic: d.topic, text: `${fromLabel}〈${d.title}〉遭司禮監截留，未曾呈覽。` });
     return null;
@@ -130,6 +146,7 @@ export function post(state: GameState, d: DocDraft, lost = false): Doc | null {
   summarize(state, doc, r);
   doc.recommend = d.recommend ?? defaultRecommend(doc);
   state.docs.push(doc);
+  for (const h of postHooks) h(state, doc);
   return doc;
 }
 

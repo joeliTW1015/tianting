@@ -4,11 +4,12 @@ import { dateLabel } from '../core/calendar';
 import { chronicle } from '../core/scoring';
 import { newRun } from '../core/setup';
 import { advanceTurn } from '../core/tick';
-import type { GameState, PerkId } from '../core/types';
+import type { Difficulty, GameState, PerkId } from '../core/types';
 import { playerView } from '../core/view';
 import { NightPalace } from './art/Scenery';
 import { ChronicleScreen } from './Chronicle';
 import { GameScreen } from './Game';
+import { endingSlides, introSlides, Slideshow } from './Slideshow';
 import { StartScreen } from './StartScreen';
 import { loadGame, loadPlain, pushHistory, saveGame, savePlain } from './storage';
 
@@ -23,6 +24,8 @@ interface Transition {
   urgent: number;
 }
 
+type Phase = 'play' | 'intro' | 'ending' | 'chronicle';
+
 export function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [saved, setSaved] = useState<GameState | null>(() => loadGame());
@@ -30,10 +33,11 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [plain, setPlain] = useState(loadPlain);
   const [transition, setTransition] = useState<Transition | null>(null);
+  const [phase, setPhase] = useState<Phase>('play');
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2600);
+    const t = setTimeout(() => setToast(null), 3200);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -50,6 +54,7 @@ export function App() {
     if (state.over) {
       pushHistory(state, chronicle(state));
       setToast(null);
+      setPhase('ending');
     }
     saveGame(state.over ? null : state);
     setVer((v) => v + 1);
@@ -63,17 +68,21 @@ export function App() {
     setTransition({ date: dateLabel(v.turn), fresh: fresh.length, urgent: fresh.filter((d) => d.urgent).length });
   };
 
-  const start = (seed: string, perk: PerkId) => {
-    const s = newRun(seed, perk);
+  const start = (seed: string, perk: PerkId, difficulty: Difficulty, skipIntro: boolean) => {
+    const s = newRun(seed, perk, { difficulty });
     saveGame(s);
     setSaved(null);
     setState(s);
-    setTransition({ date: dateLabel(0), fresh: playerView(s).inbox.length, urgent: 0 });
+    if (skipIntro) {
+      setPhase('play');
+      setTransition({ date: dateLabel(0), fresh: playerView(s).inbox.length, urgent: 0 });
+    } else setPhase('intro');
   };
 
   const toMenu = () => {
     setSaved(loadGame());
     setState(null);
+    setPhase('play');
   };
 
   const togglePlain = () => {
@@ -84,14 +93,26 @@ export function App() {
   const chron = useMemo(() => (state?.over ? chronicle(state) : null), [state, state?.over]);
 
   let screen;
-  if (!state) screen = <StartScreen saved={saved} onStart={start} onContinue={() => saved && setState(saved)} />;
-  else if (state.over && chron) screen = <ChronicleScreen state={state} chron={chron} onMenu={toMenu} />;
+  if (!state) screen = <StartScreen saved={saved} onStart={start} onContinue={() => saved && (setState(saved), setPhase('play'))} />;
+  else if (phase === 'intro')
+    screen = (
+      <Slideshow
+        kind="intro"
+        slides={introSlides(state)}
+        onDone={() => {
+          setPhase('play');
+          setTransition({ date: dateLabel(0), fresh: playerView(state).inbox.length, urgent: 0 });
+        }}
+      />
+    );
+  else if (state.over && chron && phase === 'ending') screen = <Slideshow kind="ending" slides={endingSlides(state, chron)} onDone={() => setPhase('chronicle')} />;
+  else if (state.over && chron) screen = <ChronicleScreen state={state} chron={chron} onMenu={toMenu} onReplay={() => setPhase('ending')} />;
   else screen = <GameScreen state={state} act={act} onMenu={toMenu} onEndTurn={endTurn} plain={plain} onTogglePlain={togglePlain} />;
 
   return (
     <PlainCtx.Provider value={plain}>
       {screen}
-      {transition && state && !state.over && (
+      {transition && state && !state.over && phase === 'play' && (
         <div class="transition" onClick={() => setTransition(null)} data-testid="transition">
           <NightPalace />
           <div class="transition-text">

@@ -8,6 +8,8 @@ import { Portrait } from './art/Portrait';
 import { HallScene } from './art/Scenery';
 import { Gloss } from './glossary';
 import { DECISION_TEXT, KIND_SEAL } from './Inbox';
+import { oddsText, oddsTier } from '../core/intel';
+import { STATUS_DEFS } from '../core/statuses';
 
 const KIND_NAME = {
   memorial: '奏疏',
@@ -27,7 +29,7 @@ export function fmtNum(v: number, unit?: string): string {
   return `${Math.round(v)}${unit ?? ''}`;
 }
 
-export function DocPane({ doc, state, view, act }: { doc: DocView | null; state: GameState; view: PlayerView; act: Act }) {
+export function DocPane({ doc, state, view, act, onBattle, onClose }: { doc: DocView | null; state: GameState; view: PlayerView; act: Act; onBattle?: (id: number) => void; onClose?: () => void }) {
   const plain = useContext(PlainCtx);
   if (!doc) {
     return (
@@ -44,7 +46,13 @@ export function DocPane({ doc, state, view, act }: { doc: DocView | null; state:
 
   return (
     <div class="docpane">
-      <article class={`paper doc kind-${doc.kind} ${doc.urgent ? 'urgent' : ''}`} key={doc.id}>
+      <article class={`paper doc kind-${doc.kind} ${doc.urgent ? 'urgent' : ''} ${doc.certified ? 'certified' : ''}`} key={doc.id}>
+        {onClose && (
+          <button class="doc-close" onClick={onClose} title="收起文書" data-testid="doc-close">
+            ×
+          </button>
+        )}
+        {doc.certified && <div class="cert-seal">確</div>}
         {audience && doc.fromLook !== undefined && doc.fromKind && (
           <div class="audience-banner">
             <HallScene />
@@ -89,8 +97,8 @@ export function DocPane({ doc, state, view, act }: { doc: DocView | null; state:
         {!doc.read && (
           <div class="read-cta">
             <p>以上為內閣摘要，全文或有票擬未載之處。</p>
-            <button class="btn primary" data-testid="read" disabled={view.energy < 1} onClick={() => act((s) => readDoc(s, doc.id))}>
-              細讀全文（精力 1）
+            <button class="btn primary" data-testid="read" disabled={view.energy <= -3} onClick={() => act((s) => readDoc(s, doc.id))}>
+              細讀全文（精力 1{view.energy <= 0 ? '・透支' : ''}）
             </button>
           </div>
         )}
@@ -125,6 +133,19 @@ export function DocPane({ doc, state, view, act }: { doc: DocView | null; state:
           </div>
         )}
 
+        {doc.battleId !== undefined && onBattle && (
+          <div class="battle-cta">
+            <button class="btn primary" onClick={() => onBattle(doc.battleId!)} data-testid="watch-battle">
+              觀戰報（戰況動畫）
+            </button>
+          </div>
+        )}
+        {doc.lot && (
+          <div class={`lot-line ${doc.lot.ok ? 'ok' : 'bad'}`}>
+            擲籤：<b>{doc.lot.label}</b>（{doc.lot.ok ? '事成' : '不成'}）
+          </div>
+        )}
+        {doc.delegatedBy && <div class="delegated">此奏由{doc.delegatedBy}便宜行事，所請將自行准行。</div>}
         {doc.request && <RequestBox doc={doc} act={act} over={!!state.over} />}
         {doc.task && <TaskBox doc={doc} view={view} act={act} />}
       </article>
@@ -197,6 +218,11 @@ function TaskBox({ doc, view, act }: { doc: DocView; view: PlayerView; act: Act 
           </span>
         )}
       </div>
+      {t.delegate && !t.chosen && !expired && (
+        <div class="delegated">
+          <b>{t.delegate.by}</b> 擬：「{t.delegate.label}」（{t.delegate.why}）——本旬退朝時照此辦理。若要駁回改批，{locked ? '請先細讀全文（精力 1），再選別的辦法' : '直接選別的辦法'}。
+        </div>
+      )}
       {locked && !t.chosen && !expired && (
         <div class="delegate">
           <span>未曾細讀，只能依內閣票擬辦理；要親自裁奪其他辦法，請先細讀全文（精力 1）。</span>
@@ -229,7 +255,9 @@ function TaskBox({ doc, view, act }: { doc: DocView; view: PlayerView; act: Act 
                 {c.id === t.recommend && <small class="rec">票擬</small>}
               </b>
               {cost && <span class="cost">{cost}</span>}
+              {c.odds !== undefined && <span class={`odds o${oddsTier(c.odds)}`}>勝算：{oddsText(c.odds)}</span>}
               <span class="note">{c.note}</span>
+              {c.status && STATUS_DEFS[c.status] && <span class="status-chip">狀態「{STATUS_DEFS[c.status].name}」{STATUS_DEFS[c.status].turns < 99 ? `${STATUS_DEFS[c.status].turns}旬` : ''}</span>}
             </button>
           );
         })}

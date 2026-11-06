@@ -6,17 +6,20 @@ import type { CaseState, GameState, Order } from '../types';
 import { bandit } from './bandit';
 import { border } from './border';
 import { coast } from './coast';
+import { eunuch } from './eunuch';
 import { exam } from './exam';
-import { inner } from './inner';
 import { prince } from './prince';
 import { remit } from './remit';
 import { river } from './river';
 import { salt } from './salt';
 import { tusi } from './tusi';
 import type { CaseDef } from './types';
+import { uncle } from './uncle';
 
-export const CASE_DEFS: Record<string, CaseDef> = { border, remit, bandit, prince, river, coast, salt, inner, exam, tusi };
-export const CASE_IDS = Object.keys(CASE_DEFS);
+export const CASE_DEFS: Record<string, CaseDef> = { eunuch, uncle, border, remit, bandit, prince, river, coast, salt, exam, tusi };
+/** 疑案池（每局抽五案）；權閹、皇叔兩條前朝主線必出 */
+export const CASE_IDS = ['border', 'remit', 'bandit', 'prince', 'river', 'coast', 'salt', 'exam', 'tusi'];
+export const FIXED_CASES = ['eunuch', 'uncle'];
 
 export function defOf(c: CaseState): CaseDef {
   return CASE_DEFS[c.def];
@@ -24,11 +27,11 @@ export function defOf(c: CaseState): CaseDef {
 
 /** 浮現的時間槽：第一案開局不久，其後陸續 */
 const SLOTS: [number, number][] = [
-  [1, 2],
-  [8, 14],
-  [18, 26],
-  [30, 38],
-  [42, 50],
+  [6, 12],
+  [20, 32],
+  [40, 56],
+  [64, 84],
+  [92, 120],
 ];
 
 export function drawCases(state: GameState, count = 5, force?: string[]): CaseState[] {
@@ -64,7 +67,28 @@ export function drawCases(state: GameState, count = 5, force?: string[]): CaseSt
   });
   out.sort((a, b) => a.startTurn - b.startTurn);
   out.forEach((c, i) => (c.uid = `c${i + 1}`));
-  return out;
+  // 前朝主線
+  const fixed: CaseState[] = FIXED_CASES.map((id, i) => ({
+    uid: id === 'eunuch' ? 'k1' : 'k2',
+    def: id,
+    region: CASE_DEFS[id].regions[0],
+    branch: id === 'uncle' && state.difficulty === 'hard' ? 'covet' : pickBranch(state, id),
+    startTurn: i,
+    stage: 0,
+    actors: {},
+    data: {},
+    flags: {},
+    memo: [],
+  }));
+  return [...fixed, ...out];
+}
+
+function pickBranch(state: GameState, id: string): string {
+  const r = state.rng;
+  const x = r.s % 100;
+  void x;
+  if (id === 'eunuch') return pick(r, ['plot', 'plot', 'plot', 'greed', 'greed']);
+  return pick(r, ['content', 'content', 'covet', 'covet', 'covet', 'puppet', 'puppet']);
 }
 
 export function setupCases(state: GameState): void {
